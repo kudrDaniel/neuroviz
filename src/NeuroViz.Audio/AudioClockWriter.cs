@@ -22,7 +22,7 @@ public sealed class AudioClockWriter : IDisposable
         _view.Write(AudioClockLayout.OffsetVersion, 1);
     }
 
-    public void Update(double audioPositionSeconds, PlaybackState state, double rate = 1.0)
+    public void Update(double audioPositionSeconds, ClockPlaybackState state, double rate = 1.0)
     {
         var audioTicks = (long)(audioPositionSeconds * 1_000_000_000L);
         var wallTicks = (long)(_sw.Elapsed.TotalSeconds * 1_000_000_000L);

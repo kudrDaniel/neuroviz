@@ -13,4 +13,4 @@ public static class AudioClockLayout
     public const int OffsetReserved = 36;
 }
 
-public enum PlaybackState { Stop = 0, Play = 1, Pause = 2 }
+public enum ClockPlaybackState { Stop = 0, Play = 1, Pause = 2 }

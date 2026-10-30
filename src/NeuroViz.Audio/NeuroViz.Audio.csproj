@@ -17,4 +17,11 @@
     <ProjectReference Include="..\NeuroViz.Core\NeuroViz.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+  <None Include="native\win-x64\bass.dll"
+        Link="bass.dll"
+        CopyToOutputDirectory="PreserveNewest"
+        CopyToPublishDirectory="PreserveNewest" />
+</ItemGroup>
+
 </Project>

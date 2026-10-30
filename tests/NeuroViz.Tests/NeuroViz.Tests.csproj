@@ -22,12 +22,11 @@
     <ProjectReference Include="..\..\src\NeuroViz.Core\NeuroViz.Core.csproj" />
     <ProjectReference Include="..\..\src\NeuroViz.Analysis\NeuroViz.Analysis.csproj" />
     <ProjectReference Include="..\..\src\NeuroViz.Project\NeuroViz.Project.csproj" />
+    <ProjectReference Include="..\..\src\NeuroViz.Audio\NeuroViz.Audio.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\samples\rules\basic.json"
-          Link="Fixtures\basic.json"
-          CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\samples\rules\basic.json" Link="Fixtures\basic.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
