@@ -88,6 +88,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         ThrowIfDisposed();
         if (_handle == 0) return;
         Bass.ChannelStop(_handle);
+        Bass.ChannelSetPosition(_handle, 0);
         Interlocked.Exchange(ref _dspSampleCursor, 0);
         _clock?.Update(0, ClockPlaybackState.Stop);
     }

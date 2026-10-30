@@ -2,6 +2,8 @@ using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 
+using NeuroViz.App.Views;
+
 namespace NeuroViz.App;
 
 public partial class App : Application

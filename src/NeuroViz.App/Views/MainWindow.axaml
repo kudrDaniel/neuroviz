@@ -1,0 +1,85 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:NeuroViz.App.ViewModels"
+        xmlns:controls="using:NeuroViz.App.Controls"
+        x:Class="NeuroViz.App.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="NeuroViz — Inspector"
+        Width="1100" Height="700"
+        Background="#FF14141A">
+
+    <Grid RowDefinitions="Auto,Auto,Auto,200,Auto,*"
+          Margin="12">
+
+        <!-- Row 0: кнопки -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8">
+            <Button Content="Open…" Click="OnOpenClicked" MinWidth="90" />
+            <Button Content="Play" Command="{Binding PlayCommand}" MinWidth="70" />
+            <Button Content="Pause" Command="{Binding PauseCommand}" MinWidth="70" />
+            <Button Content="Stop" Command="{Binding StopCommand}" MinWidth="70" />
+            <Button Content="Save project…" Click="OnSaveClicked" MinWidth="110" />
+        </StackPanel>
+
+        <!-- Row 1: позиция / таймер -->
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="0,8,0,0">
+            <TextBlock Grid.Column="0"
+                       Text="{Binding Position, StringFormat='{}{0:0.00} / '}"
+                       Foreground="#FFB0B0B0" />
+            <TextBlock Grid.Column="2"
+                       Text="{Binding Duration, StringFormat='{}{0:0.00} s'}"
+                       Foreground="#FFB0B0B0" />
+            <Slider Grid.Column="1"
+                        x:Name="PositionSlider"
+                        Value="{Binding SliderPosition, Mode=OneWay}"
+                        Minimum="0"
+                        Maximum="{Binding Duration}"
+                        Margin="8,0"
+                        PointerPressed="OnSliderPressed"
+                        PointerReleased="OnSliderReleased" />
+        </Grid>
+
+        <!-- Row 2: статус -->
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,4,0,8">
+            <TextBlock Grid.Column="0" Text="{Binding StatusText}"
+                       Foreground="#FF8FA6C0" TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Column="1"
+                       Text="{Binding DetectorErrors, StringFormat='errors: {0}'}"
+                       Foreground="#FF8F6060" />
+        </Grid>
+
+        <!-- Row 3: таймлайн -->
+        <controls:TimelineControl Grid.Row="3"
+                                  x:Name="Timeline"
+                                  Events="{Binding Events}"
+                                  Duration="{Binding Duration}"
+                                  Position="{Binding Position}"
+                                  Height="120"
+                                  Margin="0,0,0,8"
+                                  SeekRequested="OnTimelineSeek" />
+
+        <!-- Row 4: разделитель -->
+        <GridSplitter Grid.Row="4" Height="4" Background="#FF2A2A34" />
+
+        <!-- Row 5: таблица событий -->
+        <DataGrid Grid.Row="5"
+                  ItemsSource="{Binding Events}"
+                  IsReadOnly="True"
+                  CanUserResizeColumns="True"
+                  AutoGenerateColumns="False"
+                  GridLinesVisibility="Horizontal"
+                  Background="#FF1A1A22"
+                  RowBackground="#FF1A1A22"
+                  Foreground="#FFE0E0E8">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Time (s)" Width="90"
+                                    Binding="{Binding Timestamp, StringFormat='{}{0:0.000}'}" />
+                <DataGridTextColumn Header="Type" Width="140"
+                                    Binding="{Binding Type}" />
+                <DataGridTextColumn Header="Conf." Width="70"
+                                    Binding="{Binding Confidence, StringFormat='{}{0:0.00}'}" />
+                <DataGridTextColumn Header="Params" Width="*"
+                                    Binding="{Binding ParamsDisplay}" />
+            </DataGrid.Columns>
+        </DataGrid>
+    </Grid>
+</Window>

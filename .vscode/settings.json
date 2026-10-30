@@ -19,6 +19,6 @@
     "**/TestResults": true
   },
   "dotnet.completion.showCompletionItemsFromUnimportedNamespaces": true,
-  "csharp.inlayHints.parameters.enabled": true,
-  "csharp.inlayHints.types.enabled": true
+  "dotnet.inlayHints.enableInlayHintsForParameters": true,
+  "csharp.inlayHints.enableInlayHintsForTypes": true
 }
