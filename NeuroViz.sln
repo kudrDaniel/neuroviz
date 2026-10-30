@@ -1,0 +1,66 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.Analysis", "src\NeuroViz.Analysis\NeuroViz.Analysis.csproj", "{DC43C894-0CD9-7C3A-95DE-71D81CDADF15}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.App", "src\NeuroViz.App\NeuroViz.App.csproj", "{037A763A-DF09-7BBC-F7F0-96A204A6038C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.Audio", "src\NeuroViz.Audio\NeuroViz.Audio.csproj", "{2E459E28-1926-25EC-DFCD-CA75678DFF36}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.Core", "src\NeuroViz.Core\NeuroViz.Core.csproj", "{2F51E749-AB5B-12ED-9AAA-766E369A7D97}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.Project", "src\NeuroViz.Project\NeuroViz.Project.csproj", "{31280C38-5F48-E190-64CC-46540A5941DC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NeuroViz.Tests", "tests\NeuroViz.Tests\NeuroViz.Tests.csproj", "{10FEE573-474D-1CB9-17C6-C83BAEF19867}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DC43C894-0CD9-7C3A-95DE-71D81CDADF15}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DC43C894-0CD9-7C3A-95DE-71D81CDADF15}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DC43C894-0CD9-7C3A-95DE-71D81CDADF15}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DC43C894-0CD9-7C3A-95DE-71D81CDADF15}.Release|Any CPU.Build.0 = Release|Any CPU
+		{037A763A-DF09-7BBC-F7F0-96A204A6038C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{037A763A-DF09-7BBC-F7F0-96A204A6038C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{037A763A-DF09-7BBC-F7F0-96A204A6038C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{037A763A-DF09-7BBC-F7F0-96A204A6038C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2E459E28-1926-25EC-DFCD-CA75678DFF36}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E459E28-1926-25EC-DFCD-CA75678DFF36}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E459E28-1926-25EC-DFCD-CA75678DFF36}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E459E28-1926-25EC-DFCD-CA75678DFF36}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F51E749-AB5B-12ED-9AAA-766E369A7D97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F51E749-AB5B-12ED-9AAA-766E369A7D97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F51E749-AB5B-12ED-9AAA-766E369A7D97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F51E749-AB5B-12ED-9AAA-766E369A7D97}.Release|Any CPU.Build.0 = Release|Any CPU
+		{31280C38-5F48-E190-64CC-46540A5941DC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{31280C38-5F48-E190-64CC-46540A5941DC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{31280C38-5F48-E190-64CC-46540A5941DC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{31280C38-5F48-E190-64CC-46540A5941DC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{10FEE573-474D-1CB9-17C6-C83BAEF19867}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{10FEE573-474D-1CB9-17C6-C83BAEF19867}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{10FEE573-474D-1CB9-17C6-C83BAEF19867}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{10FEE573-474D-1CB9-17C6-C83BAEF19867}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{DC43C894-0CD9-7C3A-95DE-71D81CDADF15} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{037A763A-DF09-7BBC-F7F0-96A204A6038C} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{2E459E28-1926-25EC-DFCD-CA75678DFF36} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{2F51E749-AB5B-12ED-9AAA-766E369A7D97} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{31280C38-5F48-E190-64CC-46540A5941DC} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{10FEE573-474D-1CB9-17C6-C83BAEF19867} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {660B57DF-40DD-4A37-8B9C-6B6E5D16B2B2}
+	EndGlobalSection
+EndGlobal

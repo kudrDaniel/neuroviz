@@ -1,0 +1,74 @@
+# === .NET / C# ===
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.rsuser
+project.lock.json
+*.nuget.props
+*.nuget.targets
+.vs/
+.idea/
+*.DotSettings.user
+
+# === .vscode ===
+# Игнорируем всё, кроме общих конфигов проекта
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/*.code-snippets
+
+# === Тесты и покрытие ===
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+BenchmarkDotNet.Artifacts/
+
+# === Godot (на будущее, Фаза 3) ===
+.godot/
+*.translation
+export.cfg
+export_presets.cfg
+# НЕ игнорируем .cs, .tscn, .tres, .gd, .import-файлы сцен —
+# .import-файлы ресурсов Godot коммитятся, а .godot/ — это кеш.
+# *.import ниже исключаем из игнора — правило для конкретных случаев ниже.
+
+# === Нативные библиотеки ManagedBass, если будете класть рядом с exe вручную ===
+# (NuGet-версии идут в bin/ — уже игнорируется)
+*.so
+*.dylib
+*.dll
+!src/**/*.dll
+
+# === ОС ===
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# === Редакторы / временное ===
+*.swp
+*.swo
+*~
+*.log
+.vscode-test/

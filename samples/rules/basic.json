@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "onset-pulse",
+      "priority": 100,
+      "when": {
+        "event": "onset",
+        "filters": {
+          "confidence": { "min": 0.7 }
+        }
+      },
+      "actions": [
+        { "type": "set", "param": "pulse", "value": 1.0, "decayMs": 200 }
+      ]
+    },
+    {
+      "id": "novelty-shiver",
+      "priority": 200,
+      "when": {
+        "event": "novelty",
+        "filters": {
+          "params.error_magnitude": { "min": 0.5 }
+        }
+      },
+      "actions": [
+        { "type": "set", "param": "shiver", "value": 1.0, "decayMs": 800 },
+        { "type": "set", "param": "cortex_flash", "value": 0.6, "decayMs": 400 }
+      ]
+    },
+    {
+      "id": "stream-open",
+      "priority": 50,
+      "when": {
+        "event": "stream_boundary",
+        "filters": { "params.open": { "eq": "1" } }
+      },
+      "actions": [
+        { "type": "set", "param": "stream_glow", "value": 0.8, "decayMs": 1500 }
+      ]
+    }
+  ]
+}
