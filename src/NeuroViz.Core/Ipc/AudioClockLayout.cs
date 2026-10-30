@@ -1,4 +1,4 @@
-﻿namespace NeuroViz.Audio;
+﻿namespace NeuroViz.Core.Ipc;
 
 public static class AudioClockLayout
 {

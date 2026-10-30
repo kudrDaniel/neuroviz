@@ -18,6 +18,7 @@
             <Button Content="Pause" Command="{Binding PauseCommand}" MinWidth="70" />
             <Button Content="Stop" Command="{Binding StopCommand}" MinWidth="70" />
             <Button Content="Save project…" Click="OnSaveClicked" MinWidth="110" />
+            <Button Content="Launch Visualizer" Command="{Binding LaunchVisualizerCommand}" />
         </StackPanel>
 
         <!-- Row 1: позиция / таймер -->
@@ -29,13 +30,11 @@
                        Text="{Binding Duration, StringFormat='{}{0:0.00} s'}"
                        Foreground="#FFB0B0B0" />
             <Slider Grid.Column="1"
-                        x:Name="PositionSlider"
-                        Value="{Binding SliderPosition, Mode=OneWay}"
-                        Minimum="0"
-                        Maximum="{Binding Duration}"
-                        Margin="8,0"
-                        PointerPressed="OnSliderPressed"
-                        PointerReleased="OnSliderReleased" />
+                    x:Name="PositionSlider"
+                    Value="{Binding SliderPosition, Mode=TwoWay}"
+                    Minimum="0"
+                    Maximum="{Binding Duration}"
+                    Margin="8,0" />
         </Grid>
 
         <!-- Row 2: статус -->

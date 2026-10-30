@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using ManagedBass;
 using BassState = ManagedBass.PlaybackState;
+using NeuroViz.Core.Ipc;
 
 namespace NeuroViz.Audio;
 

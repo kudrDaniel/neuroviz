@@ -8,6 +8,9 @@ using NeuroViz.Analysis.Detectors;
 using NeuroViz.Audio;
 using NeuroViz.Core.Events;
 using NeuroViz.Project;
+using NeuroViz.App.Ipc;
+using NeuroViz.Core.Ipc;
+using NeuroViz.Core.Rules;
 
 namespace NeuroViz.App.ViewModels;
 
@@ -16,6 +19,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly AudioClockWriter _clock;
     private readonly ManagedBassAudioPlayer _player;
     private readonly DispatcherTimer _timer;
+    private readonly IpcServer _ipcServer;
+    private readonly RuleEngine _ruleEngine;
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
 
@@ -80,6 +85,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
         _timer.Tick += OnTimerTick;
         _timer.Start();
+
+        _ipcServer = new IpcServer();
+        // Загружаем правила из samples/rules/basic.json (или создаем дефолтное)
+        var rulesPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../samples/rules/basic.json"));
+        var rulesJson = File.Exists(rulesPath)
+            ? File.ReadAllText(rulesPath)
+            : "{ \"version\": 1, \"rules\": [] }";
+        _ruleEngine = new RuleEngine(RulesLoader.FromJson(rulesJson));
     }
 
     private void OnTimerTick(object? sender, EventArgs e)
@@ -95,7 +108,29 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (_pipeline is not null)
         {
             var batch = _pipeline.Sink.DrainAll();
-            foreach (var ev in batch) Events.Add(EventRow.From(ev));
+            var paramValues = new Dictionary<string, ParamValue>();
+
+            foreach (var ev in batch)
+            {
+                Events.Add(EventRow.From(ev));
+
+                // Оцениваем правила
+                foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
+                {
+                    paramValues[action.Action.Param] = new ParamValue
+                    {
+                        Value = action.Action.Value,
+                        SetAtSeconds = action.AtSeconds,
+                        DecayMs = action.Action.DecayMs
+                    };
+                }
+            }
+
+            if (CurrentFilePath != null)
+            {
+                // Отправляем кадр в Godot (даже если batch пустой, чтобы слать audio clock)
+                _ipcServer.PushFrame(_player.Position, batch, paramValues);
+            }
         }
     }
 
@@ -151,6 +186,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         Position = 0;
         SliderPosition = 0;
         IsPlaying = false;
+    }
+
+    [RelayCommand]
+    private void LaunchVisualizer()
+    {
+        // ВАЖНО: Укажите ваш путь к исполняемому файлу Godot!
+        var godotExe = @"E:\Godot_v4.7.2-stable_mono_win64\Godot_v4.7.2-stable_mono_win64.exe";
+        var projectPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../src/NeuroViz.Visualizer"));
+
+        _ipcServer.LaunchGodot(godotExe, projectPath);
+        StatusText = "Visualizer launched";
     }
 
     private void StopPlayback()
