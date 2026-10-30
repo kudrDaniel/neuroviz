@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NeuroViz.Core\NeuroViz.Core.csproj" />
+    <ProjectReference Include="..\NeuroViz.Audio\NeuroViz.Audio.csproj" />
   </ItemGroup>
 
 </Project>

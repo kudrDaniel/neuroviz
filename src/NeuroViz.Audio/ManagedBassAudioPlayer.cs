@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using ManagedBass;
+using BassState = ManagedBass.PlaybackState;
 
 namespace NeuroViz.Audio;
 
@@ -8,7 +9,8 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
     private readonly AudioClockWriter? _clock;
     private int _handle;
     private long _seq;
-    private DSPProcedure? _dsp;      // держим делегат живым
+    private long _dspSampleCursor;   // <-- НОВОЕ: сэмплов на канал, прошедших DSP
+    private DSPProcedure? _dsp;
     private bool _disposed;
 
     public ManagedBassAudioPlayer(AudioClockWriter? clock = null)
@@ -19,15 +21,9 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
 
     public event EventHandler<PcmFrame>? PcmAvailable;
 
-    public double Position
-    {
-        get
-        {
-            if (_handle == 0) return 0;
-            var bytes = Bass.ChannelGetPosition(_handle);
-            return Bass.ChannelBytes2Seconds(_handle, bytes);
-        }
-    }
+    // Position теперь — позиция головки DSP, а не «что слышит пользователь».
+    // Для анализа и таймлайна это ровно то, что нужно.
+    public double Position => (double)Interlocked.Read(ref _dspSampleCursor) / SampleRate;
 
     public double Duration
     {
@@ -39,7 +35,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         }
     }
 
-    public bool IsPlaying => _handle != 0 && Bass.ChannelIsActive(_handle) == PlaybackState.Playing;
+    public bool IsPlaying => _handle != 0 && Bass.ChannelIsActive(_handle) == BassState.Playing;
     public int SampleRate { get; private set; }
     public int Channels { get; private set; }
 
@@ -56,7 +52,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
             _handle = 0;
         }
 
-        var flags = BassFlags.Float;          // 32-bit float PCM — удобно для анализа
+        var flags = BassFlags.Float;
         _handle = Bass.CreateStream(path, 0, 0, flags);
         if (_handle == 0)
             throw new InvalidOperationException($"Bass.CreateStream failed: {Bass.LastError}");
@@ -65,6 +61,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         SampleRate = info.Frequency;
         Channels = info.Channels;
         _seq = 0;
+        Interlocked.Exchange(ref _dspSampleCursor, 0);
 
         _dsp = OnDsp;
         Bass.ChannelSetDSP(_handle, _dsp, IntPtr.Zero, 0);
@@ -91,6 +88,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         ThrowIfDisposed();
         if (_handle == 0) return;
         Bass.ChannelStop(_handle);
+        Interlocked.Exchange(ref _dspSampleCursor, 0);
         _clock?.Update(0, ClockPlaybackState.Stop);
     }
 
@@ -100,31 +98,36 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         if (_handle == 0) return;
         var bytes = Bass.ChannelSeconds2Bytes(_handle, seconds);
         Bass.ChannelSetPosition(_handle, bytes);
-        _clock?.Update(Position, IsPlaying ? ClockPlaybackState.Play : ClockPlaybackState.Pause);
+        Interlocked.Exchange(ref _dspSampleCursor, (long)(seconds * SampleRate));
+        _clock?.Update(seconds, IsPlaying ? ClockPlaybackState.Play : ClockPlaybackState.Pause);
     }
 
     private void OnDsp(int handle, int channel, IntPtr buffer, int length, IntPtr user)
     {
         if (length <= 0 || buffer == IntPtr.Zero) return;
 
-        var sampleCount = length / sizeof(float);
-        var samples = new float[sampleCount];
-        Marshal.Copy(buffer, samples, 0, sampleCount);
+        var totalSamples = length / sizeof(float);
+        var perChannelSamples = totalSamples / Channels;
 
-        var bytes = Bass.ChannelGetPosition(handle);
-        var posSec = Bass.ChannelBytes2Seconds(handle, bytes);
+        // Позиция КОНЦА буфера — это ровно тот момент, до которого доанализированы данные.
+        var endPosSec = (double)(Interlocked.Read(ref _dspSampleCursor) + perChannelSamples) / SampleRate;
+
+        var samples = new float[totalSamples];
+        Marshal.Copy(buffer, samples, 0, totalSamples);
 
         var frame = new PcmFrame
         {
             Samples = samples,
             Channels = Channels,
             SampleRate = SampleRate,
-            PositionSeconds = posSec,
+            PositionSeconds = endPosSec,
             Sequence = Interlocked.Increment(ref _seq),
         };
 
+        Interlocked.Add(ref _dspSampleCursor, perChannelSamples);
+
         PcmAvailable?.Invoke(this, frame);
-        _clock?.Update(posSec, ClockPlaybackState.Play);
+        _clock?.Update(endPosSec, ClockPlaybackState.Play);
     }
 
     private void ThrowIfDisposed()
