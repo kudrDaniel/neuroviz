@@ -121,9 +121,9 @@ public sealed class IpcClient : IDisposable
     {
         try
         {
-            var path = Path.Combine(Path.GetTempPath(), IpcConstants.AudioClockMapName + ".bin");
-            _mmf = MemoryMappedFile.CreateFromFile(path, FileMode.Open, IpcConstants.AudioClockMapName, AudioClockLayout.Size, MemoryMappedFileAccess.Read);
-            _mmfView = _mmf.CreateViewAccessor(0, AudioClockLayout.Size, MemoryMappedFileAccess.Read);
+            // Открываем именованную память по имени
+            _mmf = MemoryMappedFile.OpenExisting(IpcConstants.AudioClockMapName);
+            _mmfView = _mmf.CreateViewAccessor(0, NeuroViz.Core.Ipc.AudioClockLayout.Size, MemoryMappedFileAccess.Read);
             GD.Print("[IPC] AudioClock mmap opened.");
         }
         catch (Exception ex)

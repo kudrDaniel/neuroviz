@@ -132,7 +132,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             foreach (var analyzed in batch)
             {
                 // Добавляем в UI
-                if (!Events.Any(r => Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.01))
+                if (!Events.Any(r => r.Type == analyzed.Event.Type && Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.001))
                 {
                     Events.Add(EventRow.From(analyzed));
                 }
@@ -190,6 +190,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             _pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
             _pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
             _pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
+            _pipeline.AddDetector(new SpectralFeaturesDetector(refractorySeconds: 0.05));
             _pipeline.Attach(_player);
 
             Position = 0;

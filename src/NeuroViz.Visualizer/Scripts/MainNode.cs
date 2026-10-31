@@ -12,6 +12,9 @@ public partial class MainNode : Node2D
     private ParamValue? _shiverParam;
     private ParamValue? _panParam;
     private ParamValue? _pitchParam;
+    private ParamValue? _smoothParam;
+    private ParamValue? _brightnessParam;
+
     private double _lastClock = 0.0; // <-- Запоминаем время последнего фрейма
 
     public override void _Ready()
@@ -50,6 +53,8 @@ public partial class MainNode : Node2D
             if (frame.Params.TryGetValue("shiver", out var s)) _shiverParam = s;
             if (frame.Params.TryGetValue("pan_x", out var pan)) _panParam = pan;
             if (frame.Params.TryGetValue("pitch_height", out var pitch)) _pitchParam = pitch;
+            if (frame.Params.TryGetValue("shape_smooth", out var sh)) _smoothParam = sh;
+            if (frame.Params.TryGetValue("brightness", out var b)) _brightnessParam = b;
         }
 
         // Вычисляем значения на основе _lastClock
@@ -59,6 +64,9 @@ public partial class MainNode : Node2D
         float currentPan = _panParam?.EvaluateAt(_lastClock) ?? 0f; // -1..1
         float currentPitch = _pitchParam?.EvaluateAt(_lastClock) ?? 0f; // 0..1
 
+        float currentSmooth = _smoothParam?.EvaluateAt(_lastClock) ?? 0f;
+        float currentBrightness = _brightnessParam?.EvaluateAt(_lastClock) ?? 0f;
+
         // Смещаем по X (панорама)
         var targetX = 150f + (currentPan * 200f); // Сдвиг на +/- 200 пикселей
         _rect.Position = new Vector2(Mathf.Lerp(_rect.Position.X, targetX, 0.1f), _rect.Position.Y);
@@ -67,6 +75,13 @@ public partial class MainNode : Node2D
         var baseColor = new Color(0.2f, 0.6f, 1.0f);
         var pitchColor = new Color(0.8f, 0.9f, 1.0f); // Более яркий/белый для высоких нот
         var mixedColor = baseColor.Lerp(pitchColor, currentPitch);
+
+        // Вращение от гармоничности (0 рад ... 0.785 рад (45 градусов))
+        _rect.Rotation = currentSmooth * 0.785f;
+
+        // Яркость (свечение)
+        var finalColor = _rect.Color.Lerp(Colors.White, currentBrightness * 0.5f);
+        _rect.Color = finalColor;
 
         var scale = 1.0f + currentPulse * 0.5f; // Пульс до 1.5x
         _rect.Scale = new Vector2(scale, scale);

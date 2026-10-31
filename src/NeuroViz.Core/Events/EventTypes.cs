@@ -7,6 +7,7 @@ public static class EventTypes
     public const string Offset = "offset";
     public const string PitchSalience = "pitch_salience";
     public const string Harmonicity = "harmonicity";
+    public const string SpectralCentroid = "spectral_centroid";
     public const string BandEnergy = "band_energy";          // params: band=low|mid|high|..., value
     public const string SpectralFlux = "spectral_flux";
     public const string AzimuthEstimate = "azimuth_estimate"; // params: azimuth_rad

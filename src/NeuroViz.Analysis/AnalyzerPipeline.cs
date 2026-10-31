@@ -15,6 +15,8 @@ public sealed class AnalyzerPipeline : IDisposable
     private IAudioPlayer? _player;
     private long _detectorErrors;
 
+    private SpectralFrame? _lastSpectralFrame;
+
     public double LastAnalyzedTimestamp { get; private set; }
 
     public AnalyzerPipeline(int sampleRate, int channels, int fftSize = 2048, int hopSize = 1024, EventSink? sink = null)
@@ -59,7 +61,7 @@ public sealed class AnalyzerPipeline : IDisposable
                 try
                 {
                     foreach (var ev in pcmDetector.ProcessPcm(frame))
-                        _sink.Emit(ev, null); // null, так как нет спектра
+                        _sink.Emit(ev, _lastSpectralFrame); // <-- ПЕРЕДАЕМ ПОСЛЕДНИЙ СПЕКТР
                 }
                 catch { Interlocked.Increment(ref _detectorErrors); }
             }
@@ -71,6 +73,8 @@ public sealed class AnalyzerPipeline : IDisposable
 
     private void ProcessFrame(SpectralFrame frame)
     {
+        _lastSpectralFrame = frame;
+
         foreach (var detector in _detectors)
         {
             try

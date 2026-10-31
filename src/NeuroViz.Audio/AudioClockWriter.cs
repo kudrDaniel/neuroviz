@@ -13,10 +13,8 @@ public sealed class AudioClockWriter : IDisposable
 
     public AudioClockWriter()
     {
-        var path = Path.Combine(Path.GetTempPath(), IpcConstants.AudioClockMapName + ".bin");
-        _mmf = MemoryMappedFile.CreateFromFile(
-            path, FileMode.Create, IpcConstants.AudioClockMapName,
-            AudioClockLayout.Size, MemoryMappedFileAccess.ReadWrite);
+        // Создаем именованную разделяемую память (без файла на диске)
+        _mmf = MemoryMappedFile.CreateOrOpen(IpcConstants.AudioClockMapName, AudioClockLayout.Size);
         _view = _mmf.CreateViewAccessor(0, AudioClockLayout.Size);
         _view.Write(AudioClockLayout.OffsetMagic, AudioClockLayout.Magic);
         _view.Write(AudioClockLayout.OffsetVersion, 1);
