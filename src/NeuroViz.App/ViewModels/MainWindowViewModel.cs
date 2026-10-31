@@ -127,19 +127,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (!IsPlaying) return;
 
         var paramValues = new Dictionary<string, ParamValue>();
-        List<AudioEvent> eventsToSend = new();
-        double currentPos = _player.Position;
+        List<AudioEvent> eventsToSend;
+        double currentPos;
 
         if (_isLiveAnalysis && _pipeline != null)
         {
-            // LIVE РЕЖИМ: берем точное время из анализатора и забираем ВСЕ новые события
             currentPos = _pipeline.LastAnalyzedTimestamp;
             var batch = _pipeline.Sink.DrainAll();
+            eventsToSend = new List<AudioEvent>(batch.Count);
 
             foreach (var analyzed in batch)
             {
-                // Добавляем в UI
-                if (!Events.Any(r => r.Type == analyzed.Event.Type && Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.001))
+                if (!Events.Any(r => r.Type == analyzed.Event.Type &&
+                                     Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.001))
                 {
                     Events.Add(EventRow.From(analyzed));
                 }
@@ -148,7 +148,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
         else
         {
-            // REPLAY РЕЖИМ: ищем события в памяти за прошедший тик (с запасом 50 мс назад)
+            currentPos = _player.Position;
             var windowStart = _lastTickPosition - 0.05;
             eventsToSend = Events
                 .Where(r => r.Timestamp > windowStart && r.Timestamp <= currentPos)
@@ -156,12 +156,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 .ToList();
         }
 
-        // Применяем правила к найденным событиям
+        // Приоритеты: внутри одного события — побеждает высший приоритет
+        // (Process отдаёт действия в порядке убывания priority); между событиями
+        // — побеждает более позднее (естественное течение времени).
         foreach (var ev in eventsToSend)
         {
+            var paramsInThisEvent = new HashSet<string>();
             foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
             {
-                // Теперь action.Action больше нет, все свойства лежат прямо в action
+                if (!paramsInThisEvent.Add(action.Param))
+                    continue;
+
                 paramValues[action.Param] = new ParamValue
                 {
                     Value = action.Value,
@@ -171,7 +176,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         }
 
-        // Отправляем в Godot (даже если пусто, чтобы обновить часы)
         _ipcServer.PushFrame(currentPos, eventsToSend, paramValues);
         _lastTickPosition = currentPos;
     }
