@@ -182,16 +182,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Duration = _player.Duration;
             CurrentFilePath = path;
 
-            _isLiveAnalysis = true;
-            _lastTickPosition = 0;
-
             _pipeline = new AnalyzerPipeline(_player.SampleRate, _player.Channels);
             _pipeline.AddDetector(new OnsetDetector(historySize: 20, thresholdMult: 2.2f, refractorySeconds: 0.07));
             _pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
             _pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
             _pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
             _pipeline.AddDetector(new SpectralFeaturesDetector(refractorySeconds: 0.05));
-            _pipeline.Attach(_player);
+
+            SwitchToLive();
 
             Position = 0;
             SliderPosition = 0;
@@ -211,11 +209,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (CurrentFilePath is null) return;
 
-        // Если мы начинаем с самого начала, включаем Live-анализ
-        if (_player.Position < 0.1)
-        {
-            _isLiveAnalysis = true;
-        }
+        // Если играем с начала, а мы в replay (после seek) — возвращаемся в live.
+        if (!_isLiveAnalysis && _player.Position < 0.1)
+            SwitchToLive();
 
         _player.Play();
         IsPlaying = true;
@@ -281,9 +277,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _player.Seek(seconds);
         Position = seconds;
         SliderPosition = seconds;
-        _lastTickPosition = seconds; // Синхронизируем окно отправки
-        _isLiveAnalysis = false;     // Переключаемся на воспроизведение из памяти!
-        _pipeline?.Reset();          // Сбрасываем историю детекторов
+        _pipeline?.Reset();
+        SwitchToReplay();   // detach + сброс sink + флаг
     }
 
     public async Task SaveProjectAsync(string targetPath)
@@ -339,5 +334,23 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _pipeline?.Dispose();
         _player.Dispose();
         _clock.Dispose();
+    }
+
+    private void SwitchToLive()
+    {
+        if (_pipeline is null) return;
+        _pipeline.Attach(_player);
+        _pipeline.Sink.DrainAll();          // сброс стейл-событий, накопленных в replay
+        _isLiveAnalysis = true;
+        _lastTickPosition = _player.Position;
+    }
+
+    private void SwitchToReplay()
+    {
+        if (_pipeline is null) { _isLiveAnalysis = false; return; }
+        _pipeline.Detach();                 // ← аудио-колбэк больше не кормит детекторы
+        _pipeline.Sink.DrainAll();          // сброс накопленного в live до переключения
+        _isLiveAnalysis = false;
+        _lastTickPosition = _player.Position;
     }
 }

@@ -42,6 +42,7 @@ public sealed class AnalyzerPipeline : IDisposable
     {
         if (_player is not null) _player.PcmAvailable -= OnPcm;
         _player = null;
+        _lastSpectralFrame = null;
     }
 
     public void Reset()
