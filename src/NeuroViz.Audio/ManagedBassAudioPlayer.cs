@@ -125,21 +125,13 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         var totalSamples = length / sizeof(float);
         var perChannelSamples = totalSamples / Channels;
 
-        // 1) Снимок генерации ДО мутации состояния.
         var genBefore = Volatile.Read(ref _seekGeneration);
-
-        // 2) Атомарно продвигаем курсор; возвращённое значение — авторитетная
-        //    позиция КОНЦА буфера (уже учитывает возможный Seek до этого момента).
         var endCursor = Interlocked.Add(ref _dspSampleCursor, perChannelSamples);
         var endPosSec = (double)endCursor / SampleRate;
 
-        // 3) Копируем сэмплы — buffer уже заполнен BASS'ом.
         var samples = new float[totalSamples];
         Marshal.Copy(buffer, samples, 0, totalSamples);
 
-        // 4) Если за время шагов 1–3 случился Seek/Stop/Load — кадр стейл.
-        //    Отбрасываем: не эмитим, не трогаем _clock (Seek уже выставил
-        //    правильное значение), не расходуем FrameSeq.
         if (Volatile.Read(ref _seekGeneration) != genBefore)
             return;
 
@@ -152,7 +144,12 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
             Sequence = Interlocked.Increment(ref _seq),
         };
 
+        // Единственный подписчик — AnalyzerPipeline.OnPcm, который лишь
+        // кладёт фрейм в bounded Channel. Ни FFT, ни детекторов здесь больше нет.
         PcmAvailable?.Invoke(this, frame);
+
+        // Часы обновляем независимо от подписчиков — MMF читается визуализатором
+        // на суб-фреймовой частоте (фикс 4.9).
         _clock?.Update(endPosSec, ClockPlaybackState.Play);
     }
 

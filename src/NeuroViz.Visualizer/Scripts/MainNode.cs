@@ -71,23 +71,29 @@ public partial class MainNode : Node2D
         float currentSmooth = _smoothParam?.EvaluateAt(nowClock) ?? 0f;
         float currentBrightness = _brightnessParam?.EvaluateAt(nowClock) ?? 0f;
 
-        // Панорама
-        var targetX = 150f + (currentPan * 200f);
-        _rect.Position = new Vector2(Mathf.Lerp(_rect.Position.X, targetX, 0.1f), _rect.Position.Y);
+        // Frame-rate independent smoothing: K = 25 → τ ≈ 40 мс.
+        // 63% за 40 мс, 95% за 120 мс. "Snappy pop" вместо snap.
+        float k = 1f - Mathf.Exp(-25f * (float)delta);
 
-        // Пульс
-        var scale = 1.0f + currentPulse * 0.5f;
-        _rect.Scale = new Vector2(scale, scale);
+        // Панорама — теперь тоже независима от FPS
+        var targetX = 150f + currentPan * 200f;
+        _rect.Position = new Vector2(
+            Mathf.Lerp(_rect.Position.X, targetX, k),
+            _rect.Position.Y);
 
-        // Гармоничность → вращение (0..45°)
-        _rect.Rotation = currentSmooth * 0.785f;
+        // Пульс — плавный rise
+        var targetScale = 1.0f + currentPulse * 0.5f;
+        _rect.Scale = _rect.Scale.Lerp(new Vector2(targetScale, targetScale), k);
 
-        // Цвет — единый конвейер
-        var color = new Color(0.2f, 0.6f, 1.0f);
-        color = color.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);
-        color = color.Lerp(Colors.White, currentBrightness * 0.5f);
-        color = color.Lerp(Colors.Orange, currentShiver);
-        _rect.Color = color;
+        // Гармоничность — плавное вращение
+        _rect.Rotation = Mathf.Lerp(_rect.Rotation, currentSmooth * 0.785f, k);
+
+        // Цвет — единый конвейер + сглаживание на выходе
+        var targetColor = new Color(0.2f, 0.6f, 1.0f);
+        targetColor = targetColor.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);
+        targetColor = targetColor.Lerp(Colors.White, currentBrightness * 0.5f);
+        targetColor = targetColor.Lerp(Colors.Orange, currentShiver);
+        _rect.Color = _rect.Color.Lerp(targetColor, k);
     }
 
     public override void _ExitTree()
