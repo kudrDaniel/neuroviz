@@ -17,11 +17,11 @@ public sealed class NoveltyDetector : IEventDetector
     private readonly float _minVolume;
 
     public NoveltyDetector(
-        float alpha = 0.1f,
-        int historySize = 30,
-        float thresholdMult = 2.0f,
-        double refractorySeconds = 0.4,
-        float minVolume = 0.5f)
+    float alpha = 0.01f,              // было 0.1f
+    int historySize = 50,             // было 30
+    float thresholdMult = 2.5f,       // было 2.0f
+    double refractorySeconds = 1.5,   // было 0.4
+    float minVolume = 0.5f)
     {
         _alpha = alpha;
         _historySize = historySize;

@@ -30,6 +30,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private bool _isLiveAnalysis = true;
     private double _lastTickPosition = 0;
 
+    private readonly CancellationTokenSource _lifetimeCts = new();
+
     public bool IsDragging { get; set; }
 
     public ObservableCollection<EventRow> Events { get; } = new();
@@ -378,34 +380,25 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
-            var sha = await ComputeSha256Async(CurrentFilePath);
+            StatusText = $"Computing SHA-256 for {Path.GetFileName(CurrentFilePath)}…";
+            var sha = await ComputeSha256Async(CurrentFilePath, _lifetimeCts.Token);
 
             var timeline = new EventTimeline
             {
-                AudioPath = Path.GetFullPath(CurrentFilePath),
-                AudioSha256 = sha,
-                DurationSeconds = Duration,
-                Events = Events.Select(r => r.Source).ToList(),
-                AnalysisMeta =
-            {
-                ["sampleRate"] = _player.SampleRate.ToString(),
-                ["channels"]   = _player.Channels.ToString(),
-                // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
-                // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
-                ["detectors"]  = "onset,novelty,pitch,azimuth,spectral_features",
-            },
+                // ... без изменений
             };
 
             var project = new ProjectDocument
             {
-                Name = Path.GetFileNameWithoutExtension(CurrentFilePath),
-                CreatedAt = DateTimeOffset.UtcNow,
-                Timeline = timeline,
-                Rules = _rulesDocument,   // ← фикс: правила попадают в .nvproj
+                // ... без изменений
             };
 
             ProjectSerializer.Save(project, targetPath);
             StatusText = $"Saved {Events.Count} events → {Path.GetFileName(targetPath)}";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Save cancelled";
         }
         catch (Exception ex)
         {
@@ -413,10 +406,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static async Task<string> ComputeSha256Async(string path)
+    private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
     {
         await using var fs = File.OpenRead(path);
-        var hash = await SHA256.HashDataAsync(fs);
+        var hash = await SHA256.HashDataAsync(fs, ct);
         return Convert.ToHexString(hash);
     }
 
@@ -428,11 +421,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _disposed = true;
 
         _timer.Stop();
+        _lifetimeCts.Cancel();          // ← для 6.15 ниже
 
-        _pipeline?.Dispose();     // отписывает OnPcm от плеера
-        _player.Dispose();        // останавливает Bass + DSP-колбэк
-        _clock.Dispose();         // безопасно: писателей больше нет
-        _ipcServer.Dispose();     // kill Godot, TryComplete канала, _cts.Dispose
+        _pipeline?.Dispose();
+        _player.Dispose();
+        _clock.Dispose();
+        _ipcServer.Dispose();
+        BassBootstrap.Shutdown();       // ← последним: фри'ит глобальный BASS state
+
+        _lifetimeCts.Dispose();
     }
 
     private void SwitchToLive()

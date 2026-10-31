@@ -14,9 +14,9 @@ public sealed class OnsetDetector : IEventDetector
     private double _lastOnsetSeconds = double.NegativeInfinity;
 
     public OnsetDetector(
-        int historySize = 20,
-        float thresholdMult = 1.5f,
-        double refractorySeconds = 0.03)
+    int historySize = 20,
+    float thresholdMult = 2.2f,       // было 1.5f
+    double refractorySeconds = 0.07)  // было 0.03
     {
         if (historySize < 2) throw new ArgumentOutOfRangeException(nameof(historySize));
         _historySize = historySize;

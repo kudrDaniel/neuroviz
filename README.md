@@ -40,49 +40,45 @@
 
 ## 🛠 Требования
 
-*   **.NET SDK** (8.0 или 10.0).
-*   **Godot 4.x** (Обязательно версия **.NET** / Mono, обычная версия не подойдет).
-*   **BASS Audio Library** (нативная библиотека).
-    *   *Внимание:* Из-за лицензионных ограничений `bass.dll` не хранится в репозитории. Вам нужно скачать архив `bass24.zip` с [un4seen.com](https://www.un4seen.com/), извлечь `x64/bass.dll` и положить его в папку `src/NeuroViz.Audio/native/win-x64/`.
-
----
+*   **.NET SDK 10.0** — для сборки `NeuroViz.App`, `NeuroViz.Audio`,
+    `NeuroViz.Analysis`, `NeuroViz.Project`, `NeuroViz.Tests`.
+*   **.NET 8 runtime** — для запуска `NeuroViz.Visualizer` (Godot 4.7
+    целится в net8.0). Альтернатива: `DOTNET_ROLL_FORWARD=Major`,
+    чтобы запускать визуализатор на runtime .NET 10.
+*   **Godot 4.x** (обязательно версия **.NET** / Mono).
+*   **BASS Audio Library** — `src/NeuroViz.Audio/native/win-x64/bass.dll`
+    (включён в репозиторий).
 
 ## 🚀 Быстрый старт
 
-1.  **Клонируйте репозиторий:**
-    ```bash
-    git clone https://github.com/yourname/NeuroViz.git
-    cd NeuroViz
-2.  **Настройте BASS (Windows):**
-    Убедитесь, что файл src/NeuroViz.Audio/native/win-x64/bass.dll существует (см. раздел Требования).
-
-    Соберите решение:
-
-    bash
+1.  Клонируйте репозиторий:
+    ...
+2.  Соберите решение:
     dotnet build
-    Запустите Инспектор:
-
-    bash
+3.  Запустите Инспектор:
     dotnet run --project src/NeuroViz.App
-Использование:
+4.  Использование:
+    *   **Open…** → выбрать аудиофайл.
+    *   **Play** → проигрывание + live-анализ.
+    *   **Launch Visualizer** → при первом клике откроются два диалога:
+        путь к `Godot_v4.x-stable_mono_win64.exe` и папка с
+        `project.godot` (`src/NeuroViz.Visualizer`). Пути сохраняются в
+        `%APPDATA%/NeuroViz/settings.json`, повторный клик запускает
+        Godot без диалогов. Переконфигурировать — удалить/изменить
+        `settings.json` либо удалить соответствующий путь из него.
 
-Нажмите Open... и выберите аудиофайл (wav, mp3, ogg, flac).
+## 🎛 Настройка (Tuning)
 
-Нажмите Play (вы услышите звук и увидите события на таймлайне).
+... файл `samples/rules/basic.json` копируется рядом с exe при сборке
+(`bin/Debug/net10.0/samples/rules/basic.json`). Для кастомных наборов
+правил — укажите путь в `%APPDATA%/NeuroViz/settings.json`:
 
-Нажмите Launch Visualizer. Откроется окно Godot.
-
-Квадрат в Godot начнет реагировать на музыку.
-
-Включите Debug Mode, чтобы видеть спектрограммы каждого события.
-
-🎛 Настройка (Tuning)
-Вся логика маппинга (какое событие на что влияет) вынесена в samples/rules/basic.json.
-Вы можете менять min (минимальная уверенность), decayMs (время затухания) и связывать параметры на лету.
+```json
+{ "rulesPath": "C:\\path\\to\\my-rules.json" }
 
 Подробное описание всех ползунков и настроек читайте в файле TUNING.md.
 
-🗺 Roadmap (Планы)
+### 🗺 Roadmap (Планы)
 ☑ Слой 1: Базовые события (Onset, Spectral Flux).
 ☑ Слой 2: Предсказательное кодирование (Novelty).
 ☑ Интеграция Godot и IPC-мост.
