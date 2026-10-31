@@ -24,6 +24,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _timer;
     private readonly IpcServer _ipcServer;
     private readonly RuleEngine _ruleEngine;
+    private readonly RulesDocument _rulesDocument;
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
     private bool _isLiveAnalysis = true;
@@ -99,12 +100,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _timer.Start();
 
         _ipcServer = new IpcServer();
+
         // Загружаем правила из samples/rules/basic.json (или создаем дефолтное)
-        var rulesPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../samples/rules/basic.json"));
+        var rulesPath = Path.GetFullPath(Path.Combine(
+            AppDomain.CurrentDomain.BaseDirectory, "../../../../../samples/rules/basic.json"));
         var rulesJson = File.Exists(rulesPath)
             ? File.ReadAllText(rulesPath)
             : "{ \"version\": 1, \"rules\": [] }";
-        _ruleEngine = new RuleEngine(RulesLoader.FromJson(rulesJson));
+
+        _rulesDocument = RulesLoader.FromJson(rulesJson);   // ← сохраняем снапшот
+        _ruleEngine = new RuleEngine(_rulesDocument);
     }
 
     private void OnTimerTick(object? sender, EventArgs e)
@@ -298,11 +303,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 DurationSeconds = Duration,
                 Events = Events.Select(r => r.Source).ToList(),
                 AnalysisMeta =
-                {
-                    ["sampleRate"] = _player.SampleRate.ToString(),
-                    ["channels"] = _player.Channels.ToString(),
-                    ["detectors"] = "onset",
-                },
+            {
+                ["sampleRate"] = _player.SampleRate.ToString(),
+                ["channels"]   = _player.Channels.ToString(),
+                // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
+                // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
+                ["detectors"]  = "onset,novelty,pitch,azimuth,spectral_features",
+            },
             };
 
             var project = new ProjectDocument
@@ -310,6 +317,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 Name = Path.GetFileNameWithoutExtension(CurrentFilePath),
                 CreatedAt = DateTimeOffset.UtcNow,
                 Timeline = timeline,
+                Rules = _rulesDocument,   // ← фикс: правила попадают в .nvproj
             };
 
             ProjectSerializer.Save(project, targetPath);
