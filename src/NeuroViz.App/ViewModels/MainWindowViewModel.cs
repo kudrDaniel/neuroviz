@@ -109,6 +109,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private void OnTimerTick(object? sender, EventArgs e)
     {
+        if (_disposed) return;
+
         if (!IsDragging)
         {
             Position = _player.Position;
@@ -330,10 +332,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
         _timer.Stop();
-        _pipeline?.Dispose();
-        _player.Dispose();
-        _clock.Dispose();
+
+        _pipeline?.Dispose();     // отписывает OnPcm от плеера
+        _player.Dispose();        // останавливает Bass + DSP-колбэк
+        _clock.Dispose();         // безопасно: писателей больше нет
+        _ipcServer.Dispose();     // kill Godot, TryComplete канала, _cts.Dispose
     }
 
     private void SwitchToLive()
