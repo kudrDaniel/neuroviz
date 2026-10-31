@@ -23,7 +23,8 @@ public partial class MainNode : Node2D
         {
             Color = new Color(0.2f, 0.6f, 1.0f),
             Size = new Vector2(100, 100),
-            Position = new Vector2(150, 150)
+            Position = new Vector2(150, 150),
+            PivotOffset = new Vector2(50, 50),   // ← центр квадрата
         };
         AddChild(_rect);
 
@@ -46,7 +47,7 @@ public partial class MainNode : Node2D
 
         if (frame != null)
         {
-            _lastClock = frame.AudioClockSeconds; // <-- Обновляем часы ТОЛЬКО когда пришел фрейм
+            _lastClock = frame.AudioClockSeconds;
             _statusLabel.Text = $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | Params: {frame.Params.Count}";
 
             if (frame.Params.TryGetValue("pulse", out var p)) _pulseParam = p;
@@ -57,35 +58,30 @@ public partial class MainNode : Node2D
             if (frame.Params.TryGetValue("brightness", out var b)) _brightnessParam = b;
         }
 
-        // Вычисляем значения на основе _lastClock
         float currentPulse = _pulseParam?.EvaluateAt(_lastClock) ?? 0f;
         float currentShiver = _shiverParam?.EvaluateAt(_lastClock) ?? 0f;
-
-        float currentPan = _panParam?.EvaluateAt(_lastClock) ?? 0f; // -1..1
-        float currentPitch = _pitchParam?.EvaluateAt(_lastClock) ?? 0f; // 0..1
-
+        float currentPan = _panParam?.EvaluateAt(_lastClock) ?? 0f;
+        float currentPitch = _pitchParam?.EvaluateAt(_lastClock) ?? 0f;
         float currentSmooth = _smoothParam?.EvaluateAt(_lastClock) ?? 0f;
         float currentBrightness = _brightnessParam?.EvaluateAt(_lastClock) ?? 0f;
 
-        // Смещаем по X (панорама)
-        var targetX = 150f + (currentPan * 200f); // Сдвиг на +/- 200 пикселей
+        // 1. Панорама — смещение по X (плавно)
+        var targetX = 150f + (currentPan * 200f);
         _rect.Position = new Vector2(Mathf.Lerp(_rect.Position.X, targetX, 0.1f), _rect.Position.Y);
 
-        // Меняем насыщенность (Pitch)
-        var baseColor = new Color(0.2f, 0.6f, 1.0f);
-        var pitchColor = new Color(0.8f, 0.9f, 1.0f); // Более яркий/белый для высоких нот
-        var mixedColor = baseColor.Lerp(pitchColor, currentPitch);
+        // 2. Пульс — масштаб (до 1.5×)
+        var scale = 1.0f + currentPulse * 0.5f;
+        _rect.Scale = new Vector2(scale, scale);
 
-        // Вращение от гармоничности (0 рад ... 0.785 рад (45 градусов))
+        // 3. Гармоничность — вращение (0..45°)
         _rect.Rotation = currentSmooth * 0.785f;
 
-        // Яркость (свечение)
-        var finalColor = _rect.Color.Lerp(Colors.White, currentBrightness * 0.5f);
-        _rect.Color = finalColor;
-
-        var scale = 1.0f + currentPulse * 0.5f; // Пульс до 1.5x
-        _rect.Scale = new Vector2(scale, scale);
-        _rect.Color = mixedColor.Lerp(Colors.Orange, currentShiver);
+        // 4. Цвет — ЕДИНЫЙ конвейер: base → pitch → brightness → shiver
+        var color = new Color(0.2f, 0.6f, 1.0f);                              // базовый синий
+        color = color.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);        // высота тона
+        color = color.Lerp(Colors.White, currentBrightness * 0.5f);           // яркость
+        color = color.Lerp(Colors.Orange, currentShiver);                     // новизна
+        _rect.Color = color;
     }
 
     public override void _ExitTree()
