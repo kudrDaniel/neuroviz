@@ -146,6 +146,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         return null;
     }
 
+    private readonly HashSet<(string Type, long TickMs)> _eventKeys = new();
+
     private void OnTimerTick(object? sender, EventArgs e)
     {
         if (_disposed) return;
@@ -172,11 +174,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             foreach (var analyzed in batch)
             {
-                if (!Events.Any(r => r.Type == analyzed.Event.Type &&
-                                     Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.001))
-                {
+                // O(1) dedup: (Type, timestamp rounded to 1 ms) key.
+                var key = (analyzed.Event.Type, ToTickMs(analyzed.Event.TimestampSeconds));
+                if (_eventKeys.Add(key))
                     Events.Add(EventRow.From(analyzed));
-                }
                 eventsToSend.Add(analyzed.Event);
             }
         }
@@ -220,6 +221,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             StopPlayback();
             Events.Clear();
+            _eventKeys.Clear();
             _pipeline?.Dispose();
             _pipeline = null;
 
@@ -417,6 +419,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         var hash = await SHA256.HashDataAsync(fs);
         return Convert.ToHexString(hash);
     }
+
+    private static long ToTickMs(double seconds) => (long)Math.Round(seconds * 1000.0);
 
     public void Dispose()
     {
