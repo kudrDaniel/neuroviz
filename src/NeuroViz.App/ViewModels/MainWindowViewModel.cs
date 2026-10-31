@@ -90,8 +90,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _isDebugMode, value);
     }
 
+    public AppSettings Settings { get; }
+
     public MainWindowViewModel()
     {
+        Settings = AppSettings.Load();
+
         _clock = new AudioClockWriter();
         _player = new ManagedBassAudioPlayer(_clock);
 
@@ -101,15 +105,45 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _ipcServer = new IpcServer();
 
-        // Загружаем правила из samples/rules/basic.json (или создаем дефолтное)
-        var rulesPath = Path.GetFullPath(Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory, "../../../../../samples/rules/basic.json"));
-        var rulesJson = File.Exists(rulesPath)
-            ? File.ReadAllText(rulesPath)
-            : "{ \"version\": 1, \"rules\": [] }";
+        var rulesPath = ResolveRulesPath();
+        RulesDocument rulesDoc;
+        if (rulesPath is not null)
+        {
+            try { rulesDoc = RulesLoader.FromFile(rulesPath); }
+            catch (Exception ex)
+            {
+                StatusText = $"Rules load failed ({Path.GetFileName(rulesPath)}): {ex.Message}";
+                rulesDoc = RulesLoader.FromJson("{ \"version\": 1, \"rules\": [] }");
+            }
+        }
+        else
+        {
+            StatusText = "Rules file not found; using empty rule set";
+            rulesDoc = RulesLoader.FromJson("{ \"version\": 1, \"rules\": [] }");
+        }
 
-        _rulesDocument = RulesLoader.FromJson(rulesJson);   // ← сохраняем снапшот
+        _rulesDocument = rulesDoc;
         _ruleEngine = new RuleEngine(_rulesDocument);
+    }
+
+    private string? ResolveRulesPath()
+    {
+        // 1. Явный путь из настроек (для кастомных правил пользователя).
+        if (!string.IsNullOrEmpty(Settings.RulesPath) && File.Exists(Settings.RulesPath))
+            return Settings.RulesPath;
+
+        // 2. Файл рядом с exe (копируется через csproj, работает и в publish).
+        var bundled = Path.Combine(AppContext.BaseDirectory, "samples", "rules", "basic.json");
+        if (File.Exists(bundled)) return bundled;
+
+        // 3. Dev-fallback: источник в дереве репозитория (F5 без сборки App-проекта).
+        var dev = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "samples", "rules", "basic.json"));
+        if (File.Exists(dev)) return dev;
+
+        return null;
     }
 
     private void OnTimerTick(object? sender, EventArgs e)
@@ -246,14 +280,58 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void LaunchVisualizer()
+    public void LaunchVisualizer()
     {
-        // ВАЖНО: Укажите ваш путь к исполняемому файлу Godot!
-        var godotExe = @"E:\Godot_v4.7.2-stable_mono_win64\Godot_v4.7.2-stable_mono_win64.exe";
-        var projectPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "../../../../../src/NeuroViz.Visualizer"));
+        var exePath = Settings.GodotExePath;
+        if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
+        {
+            StatusText = "Visualizer: Godot executable path is not configured";
+            return;
+        }
 
-        _ipcServer.LaunchGodot(godotExe, projectPath);
-        StatusText = "Visualizer launched";
+        var projectPath = Settings.GodotProjectPath;
+        if (string.IsNullOrEmpty(projectPath)
+            || !Directory.Exists(projectPath)
+            || !File.Exists(Path.Combine(projectPath, "project.godot")))
+        {
+            StatusText = "Visualizer: Godot project folder is not configured (need project.godot)";
+            return;
+        }
+
+        try
+        {
+            _ipcServer.LaunchGodot(exePath, projectPath);
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Visualizer launch failed: {ex.Message}";
+            return;
+        }
+
+        var proc = _ipcServer.GodotProcess;
+        if (proc is null)
+        {
+            StatusText = "Visualizer: Process.Start returned no handle";
+            return;
+        }
+
+        StatusText = $"Visualizer launched (PID {proc.Id})";
+
+        // Проверяем через 750 мс: если Godot упал, показываем код выхода.
+        var captured = proc;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (captured.WaitForExit(750))
+                {
+                    var code = captured.ExitCode;
+                    await Dispatcher.UIThread.InvokeAsync(() =>
+                        StatusText = $"Godot exited immediately (code {code}) — run under F5 to see stderr");
+                }
+            }
+            catch { /* handle disposed */ }
+        });
     }
 
     [RelayCommand]

@@ -22,6 +22,70 @@ public partial class MainWindow : Window
         PositionSlider.AddHandler(Thumb.DragCompletedEvent, OnSliderDragCompleted, RoutingStrategies.Bubble);
     }
 
+    private async void OnLaunchVisualizerClicked(object? sender, RoutedEventArgs e)
+    {
+        var vm = ViewModel;
+
+        // 1. Godot EXE — валидируем или запрашиваем.
+        if (string.IsNullOrEmpty(vm.Settings.GodotExePath) || !File.Exists(vm.Settings.GodotExePath))
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Locate Godot .NET executable (mono build)",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                new FilePickerFileType("Godot .NET executable")
+                {
+                    Patterns = new[] { "Godot*.exe" },
+                },
+            },
+            });
+
+            if (files.Count == 0)
+            {
+                vm.StatusText = "Visualizer: Godot executable not selected";
+                return;
+            }
+
+            vm.Settings.GodotExePath = files[0].Path.LocalPath;
+            vm.Settings.Save();
+        }
+
+        // 2. Godot project — валидируем или запрашиваем.
+        var projectOk = !string.IsNullOrEmpty(vm.Settings.GodotProjectPath)
+            && Directory.Exists(vm.Settings.GodotProjectPath)
+            && File.Exists(Path.Combine(vm.Settings.GodotProjectPath, "project.godot"));
+
+        if (!projectOk)
+        {
+            var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = "Locate NeuroViz.Visualizer folder (must contain project.godot)",
+                AllowMultiple = false,
+            });
+
+            if (folders.Count == 0)
+            {
+                vm.StatusText = "Visualizer: Godot project folder not selected";
+                return;
+            }
+
+            vm.Settings.GodotProjectPath = folders[0].Path.LocalPath;
+            vm.Settings.Save();
+        }
+
+        // 3. Запуск.
+        try
+        {
+            vm.LaunchVisualizer();
+        }
+        catch (Exception ex)
+        {
+            vm.StatusText = $"Visualizer launch failed: {ex.Message}";
+        }
+    }
+
     private async void OnOpenClicked(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions

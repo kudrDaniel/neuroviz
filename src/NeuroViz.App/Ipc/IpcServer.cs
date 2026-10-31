@@ -25,18 +25,47 @@ public sealed class IpcServer : IDisposable
         });
 
     private Process? _godotProcess;
+    public Process? GodotProcess => _godotProcess;
     private long _seq = 0;
     private volatile bool _eventStreamConnected;
 
     public void LaunchGodot(string godotExePath, string projectPath)
     {
+        // Defense-in-depth: trailing separator перед закрывающей кавычкой
+        // ломает парсер аргументов Windows. Убираем его до любых манипуляций.
+        projectPath = projectPath.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (!File.Exists(godotExePath))
+            throw new FileNotFoundException("Godot executable not found", godotExePath);
+        var projectFile = Path.Combine(projectPath, "project.godot");
+        if (!File.Exists(projectFile))
+            throw new FileNotFoundException("project.godot not found", projectFile);
+
+        // ArgumentList: .NET применяет канонические правила квотирования
+        // Windows — включая случай trailing-backslash-before-quote. Ручная
+        // склейка $"--path \"{path}\"" на этом и погорела.
         var psi = new ProcessStartInfo
         {
             FileName = godotExePath,
-            Arguments = $"--path \"{projectPath}\"",
-            UseShellExecute = false
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
-        _godotProcess = Process.Start(psi);
+        psi.ArgumentList.Add("--path");
+        psi.ArgumentList.Add(projectPath);
+
+        var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Process.Start returned null");
+
+        // Осушаем пайпы, иначе дочерний процесс может заблокироваться,
+        // когда буфер заполнится. Godot пишет много в отладочном режиме.
+        proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Debug.WriteLine($"[Godot]  {e.Data}"); };
+        proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) Debug.WriteLine($"[Godot!] {e.Data}"); };
+        proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
+        _godotProcess = proc;
 
         _ = Task.Run(AcceptControlPipeAsync);
         _ = Task.Run(AcceptEventStreamAsync);
