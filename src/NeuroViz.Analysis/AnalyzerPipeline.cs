@@ -50,6 +50,22 @@ public sealed class AnalyzerPipeline : IDisposable
     private void OnPcm(object? sender, PcmFrame frame)
     {
         LastAnalyzedTimestamp = frame.PositionSeconds;
+
+        // 1. Сначала кормим сырым звуком тех, кому он нужен (Binaural)
+        foreach (var detector in _detectors)
+        {
+            if (detector is IPcmEventDetector pcmDetector)
+            {
+                try
+                {
+                    foreach (var ev in pcmDetector.ProcessPcm(frame))
+                        _sink.Emit(ev, null); // null, так как нет спектра
+                }
+                catch { Interlocked.Increment(ref _detectorErrors); }
+            }
+        }
+
+        // 2. Затем кормим спектром остальных
         _stft.Push(frame.Samples, frame.Channels, frame.PositionSeconds, ProcessFrame);
     }
 

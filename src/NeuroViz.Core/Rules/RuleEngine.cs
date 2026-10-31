@@ -18,7 +18,16 @@ public sealed class RuleEngine
             if (!Matches(rule.When.Filters, ev)) continue;
 
             foreach (var action in rule.Actions)
-                yield return new ResolvedAction(rule.Id, action, nowSeconds);
+            {
+                float actionValue = action.Value;
+
+                // Если правило указывает брать значение из события
+                if (action.ParamFromEvent != null && ev.Params.TryGetValue(action.ParamFromEvent, out var val))
+                {
+                    actionValue = val;
+                }
+                yield return new ResolvedAction(rule.Id, action.Param, actionValue, action.DecayMs, nowSeconds);
+            }
         }
     }
 
@@ -43,8 +52,8 @@ public sealed class RuleEngine
         switch (key)
         {
             case "confidence": value = ev.Confidence.ToString(System.Globalization.CultureInfo.InvariantCulture); return true;
-            case "timestamp":  value = ev.TimestampSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture); return true;
-            case "type":       value = ev.Type; return true;
+            case "timestamp": value = ev.TimestampSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture); return true;
+            case "type": value = ev.Type; return true;
         }
         if (key.StartsWith("params.", StringComparison.Ordinal))
         {
@@ -60,4 +69,4 @@ public sealed class RuleEngine
     }
 }
 
-public sealed record ResolvedAction(string RuleId, RuleAction Action, double AtSeconds);
+public sealed record ResolvedAction(string RuleId, string Param, float Value, int DecayMs, double AtSeconds);

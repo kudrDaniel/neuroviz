@@ -26,7 +26,7 @@ public sealed class Filter
 {
     [JsonPropertyName("min")] public float? Min { get; init; }
     [JsonPropertyName("max")] public float? Max { get; init; }
-    [JsonPropertyName("eq")]  public string? Eq { get; init; }   // для строковых params
+    [JsonPropertyName("eq")] public string? Eq { get; init; }   // для строковых params
 }
 
 public sealed class RuleAction
@@ -35,4 +35,5 @@ public sealed class RuleAction
     [JsonPropertyName("param")] public string Param { get; init; } = "";
     [JsonPropertyName("value")] public float Value { get; init; }
     [JsonPropertyName("decayMs")] public int DecayMs { get; init; }
+    [JsonPropertyName("param_from_event")] public string? ParamFromEvent { get; init; }
 }

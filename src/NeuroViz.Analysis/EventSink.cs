@@ -3,7 +3,7 @@ using NeuroViz.Core.Events;
 
 namespace NeuroViz.Analysis;
 
-public sealed record AnalyzedEvent(AudioEvent Event, SpectralFrame Frame);
+public sealed record AnalyzedEvent(AudioEvent Event, SpectralFrame? Frame);
 
 public sealed class EventSink
 {
@@ -11,7 +11,7 @@ public sealed class EventSink
 
     public event Action<AnalyzedEvent>? EventEmitted;
 
-    public void Emit(AudioEvent ev, SpectralFrame frame)
+    public void Emit(AudioEvent ev, SpectralFrame? frame)
     {
         var analyzed = new AnalyzedEvent(ev, frame);
         _queue.Enqueue(analyzed);

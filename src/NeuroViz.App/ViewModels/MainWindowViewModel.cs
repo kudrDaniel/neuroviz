@@ -154,11 +154,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
             {
-                paramValues[action.Action.Param] = new ParamValue
+                // Теперь action.Action больше нет, все свойства лежат прямо в action
+                paramValues[action.Param] = new ParamValue
                 {
-                    Value = action.Action.Value,
+                    Value = action.Value,
                     SetAtSeconds = action.AtSeconds,
-                    DecayMs = action.Action.DecayMs
+                    DecayMs = action.DecayMs
                 };
             }
         }
@@ -187,6 +188,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             _pipeline = new AnalyzerPipeline(_player.SampleRate, _player.Channels);
             _pipeline.AddDetector(new OnsetDetector(historySize: 20, thresholdMult: 2.2f, refractorySeconds: 0.07));
             _pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
+            _pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
+            _pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
             _pipeline.Attach(_player);
 
             Position = 0;

@@ -8,7 +8,7 @@
         "event": "onset",
         "filters": {
           "confidence": {
-            "min": 0.3
+            "min": 0.0
           }
         }
       },
@@ -44,6 +44,36 @@
           "param": "cortex_flash",
           "value": 0.6,
           "decayMs": 400
+        }
+      ]
+    },
+    {
+      "id": "azimuth-pan",
+      "priority": 90,
+      "when": {
+        "event": "azimuth_estimate"
+      },
+      "actions": [
+        {
+          "type": "set",
+          "param": "pan_x",
+          "param_from_event": "azimuth_norm",
+          "decayMs": 100
+        }
+      ]
+    },
+    {
+      "id": "pitch-brightness",
+      "priority": 80,
+      "when": {
+        "event": "pitch_salience"
+      },
+      "actions": [
+        {
+          "type": "set",
+          "param": "pitch_height",
+          "param_from_event": "pitch_norm",
+          "decayMs": 150
         }
       ]
     },

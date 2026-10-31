@@ -26,7 +26,11 @@ public sealed class EventRow
             : string.Join(", ", analyzed.Event.Params.Select(kv =>
                 $"{kv.Key}={kv.Value.ToString("0.###", CultureInfo.InvariantCulture)}")),
         Source = analyzed.Event,
-        DownsampledSpectrum = Downsample(analyzed.Frame.Magnitudes, 32) // Берем 32 полосы для наглядности
+
+        // Защита от null:
+        DownsampledSpectrum = analyzed.Frame != null
+            ? Downsample(analyzed.Frame.Magnitudes, 32)
+            : new float[32]
     };
 
     private static float[] Downsample(float[] mags, int bands)

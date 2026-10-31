@@ -17,7 +17,7 @@ public class RuleEngineTests
         var engine = MakeEngine();
         var ev = new AudioEvent { Type = EventTypes.Onset, Confidence = 0.9f, TimestampSeconds = 1.0 };
         var actions = engine.Process(ev, 1.0).ToList();
-        Assert.Contains(actions, a => a.Action.Param == "pulse");
+        Assert.Contains(actions, a => a.Param == "pulse");
     }
 
     [Fact]
@@ -26,6 +26,6 @@ public class RuleEngineTests
         var engine = MakeEngine();
         var ev = new AudioEvent { Type = EventTypes.Onset, Confidence = 0.5f, TimestampSeconds = 1.0 };
         var actions = engine.Process(ev, 1.0).ToList();
-        Assert.DoesNotContain(actions, a => a.Action.Param == "pulse");
+        Assert.DoesNotContain(actions, a => a.Param == "pulse");
     }
 }

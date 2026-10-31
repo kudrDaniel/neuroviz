@@ -10,6 +10,8 @@ public partial class MainNode : Node2D
 
     private ParamValue? _pulseParam;
     private ParamValue? _shiverParam;
+    private ParamValue? _panParam;
+    private ParamValue? _pitchParam;
     private double _lastClock = 0.0; // <-- Запоминаем время последнего фрейма
 
     public override void _Ready()
@@ -46,19 +48,29 @@ public partial class MainNode : Node2D
 
             if (frame.Params.TryGetValue("pulse", out var p)) _pulseParam = p;
             if (frame.Params.TryGetValue("shiver", out var s)) _shiverParam = s;
+            if (frame.Params.TryGetValue("pan_x", out var pan)) _panParam = pan;
+            if (frame.Params.TryGetValue("pitch_height", out var pitch)) _pitchParam = pitch;
         }
 
         // Вычисляем значения на основе _lastClock
         float currentPulse = _pulseParam?.EvaluateAt(_lastClock) ?? 0f;
         float currentShiver = _shiverParam?.EvaluateAt(_lastClock) ?? 0f;
 
-        // Визуализация
-        var baseColor = new Color(0.2f, 0.6f, 1.0f); // Синий
-        var targetColor = new Color(1.0f, 0.5f, 0.0f); // Оранжевый
+        float currentPan = _panParam?.EvaluateAt(_lastClock) ?? 0f; // -1..1
+        float currentPitch = _pitchParam?.EvaluateAt(_lastClock) ?? 0f; // 0..1
+
+        // Смещаем по X (панорама)
+        var targetX = 150f + (currentPan * 200f); // Сдвиг на +/- 200 пикселей
+        _rect.Position = new Vector2(Mathf.Lerp(_rect.Position.X, targetX, 0.1f), _rect.Position.Y);
+
+        // Меняем насыщенность (Pitch)
+        var baseColor = new Color(0.2f, 0.6f, 1.0f);
+        var pitchColor = new Color(0.8f, 0.9f, 1.0f); // Более яркий/белый для высоких нот
+        var mixedColor = baseColor.Lerp(pitchColor, currentPitch);
 
         var scale = 1.0f + currentPulse * 0.5f; // Пульс до 1.5x
         _rect.Scale = new Vector2(scale, scale);
-        _rect.Color = baseColor.Lerp(targetColor, currentShiver);
+        _rect.Color = mixedColor.Lerp(Colors.Orange, currentShiver);
     }
 
     public override void _ExitTree()
