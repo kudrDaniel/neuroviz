@@ -17,7 +17,7 @@ public sealed class IpcClient : IDisposable
     private readonly ConcurrentQueue<EventStreamFrame> _frameQueue = new();
     private readonly CancellationTokenSource _cts = new();
     private MemoryMappedFile? _mmf;
-    private MemoryMappedViewAccessor? _mmfView;
+    private MemoryMappedViewAccessor? _mmfView;   // доступ только через Volatile.Read/Write
     private long _lastSeq = -1;
 
     public bool IsConnected { get; private set; }
@@ -26,18 +26,23 @@ public sealed class IpcClient : IDisposable
     {
         _ = Task.Run(ConnectControlPipeAsync);
         _ = Task.Run(ListenEventStreamAsync);
-        _ = Task.Run(OpenAudioClock);
+        _ = Task.Run(OpenAudioClockAsync);   // было OpenAudioClock
     }
 
-    public double GetAudioClockSeconds()
+    /// <summary>
+    /// Свежее время воспроизведения из разделяемой памяти (обновляется
+    /// на каждый DSP-колбэк, ~10 мс). null — MMF ещё не открыт.
+    /// </summary>
+    public double? GetAudioClockSeconds()
     {
-        if (_mmfView == null) return 0;
+        var view = Volatile.Read(ref _mmfView);
+        if (view == null) return null;
         try
         {
-            var ticks = _mmfView.ReadInt64(AudioClockLayout.OffsetAudioPosTicksNs);
+            var ticks = view.ReadInt64(AudioClockLayout.OffsetAudioPosTicksNs);
             return ticks / 1_000_000_000.0;
         }
-        catch { return 0; }
+        catch { return null; }
     }
 
     public EventStreamFrame? GetLatestFrame()
@@ -117,26 +122,37 @@ public sealed class IpcClient : IDisposable
         }
     }
 
-    private Task OpenAudioClock()
+    private async Task OpenAudioClockAsync()
     {
-        try
+        while (!_cts.IsCancellationRequested && Volatile.Read(ref _mmfView) == null)
         {
-            // Открываем именованную память по имени
-            _mmf = MemoryMappedFile.OpenExisting(IpcConstants.AudioClockMapName);
-            _mmfView = _mmf.CreateViewAccessor(0, NeuroViz.Core.Ipc.AudioClockLayout.Size, MemoryMappedFileAccess.Read);
-            GD.Print("[IPC] AudioClock mmap opened.");
+            try
+            {
+                _mmf = MemoryMappedFile.OpenExisting(IpcConstants.AudioClockMapName);
+                var view = _mmf.CreateViewAccessor(
+                    0, AudioClockLayout.Size, MemoryMappedFileAccess.Read);
+                Volatile.Write(ref _mmfView, view);
+                GD.Print("[IPC] AudioClock mmap opened.");
+                return;
+            }
+            catch (FileNotFoundException)
+            {
+                // Инспектор ещё не создал MMF — попробуем через секунду.
+                await Task.Delay(1000, _cts.Token);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[IPC] mmap open failed: {ex.Message}");
+                await Task.Delay(1000, _cts.Token);
+            }
         }
-        catch (Exception ex)
-        {
-            GD.PrintErr($"[IPC] mmap open failed: {ex.Message}");
-        }
-        return Task.CompletedTask;
     }
 
     public void Dispose()
     {
         _cts.Cancel();
-        _mmfView?.Dispose();
+        Volatile.Read(ref _mmfView)?.Dispose();
         _mmf?.Dispose();
+        _cts.Dispose();
     }
 }

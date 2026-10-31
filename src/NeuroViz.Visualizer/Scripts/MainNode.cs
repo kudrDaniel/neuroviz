@@ -48,7 +48,9 @@ public partial class MainNode : Node2D
         if (frame != null)
         {
             _lastClock = frame.AudioClockSeconds;
-            _statusLabel.Text = $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | Params: {frame.Params.Count}";
+            bool mmapOk = _ipc.GetAudioClockSeconds() != null;
+            _statusLabel.Text = $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | " +
+                                $"Params: {frame.Params.Count} | mmap: {(mmapOk ? "ok" : "off")}";
 
             if (frame.Params.TryGetValue("pulse", out var p)) _pulseParam = p;
             if (frame.Params.TryGetValue("shiver", out var s)) _shiverParam = s;
@@ -58,29 +60,33 @@ public partial class MainNode : Node2D
             if (frame.Params.TryGetValue("brightness", out var b)) _brightnessParam = b;
         }
 
-        float currentPulse = _pulseParam?.EvaluateAt(_lastClock) ?? 0f;
-        float currentShiver = _shiverParam?.EvaluateAt(_lastClock) ?? 0f;
-        float currentPan = _panParam?.EvaluateAt(_lastClock) ?? 0f;
-        float currentPitch = _pitchParam?.EvaluateAt(_lastClock) ?? 0f;
-        float currentSmooth = _smoothParam?.EvaluateAt(_lastClock) ?? 0f;
-        float currentBrightness = _brightnessParam?.EvaluateAt(_lastClock) ?? 0f;
+        // Часы: между IPC-фреймами (30 fps) берём свежее значение из mmap
+        // (обновляется на каждый DSP-колбэк, ~10 мс) — затухание плавное.
+        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
 
-        // 1. Панорама — смещение по X (плавно)
+        float currentPulse = _pulseParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentShiver = _shiverParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentPan = _panParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentPitch = _pitchParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentSmooth = _smoothParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentBrightness = _brightnessParam?.EvaluateAt(nowClock) ?? 0f;
+
+        // Панорама
         var targetX = 150f + (currentPan * 200f);
         _rect.Position = new Vector2(Mathf.Lerp(_rect.Position.X, targetX, 0.1f), _rect.Position.Y);
 
-        // 2. Пульс — масштаб (до 1.5×)
+        // Пульс
         var scale = 1.0f + currentPulse * 0.5f;
         _rect.Scale = new Vector2(scale, scale);
 
-        // 3. Гармоничность — вращение (0..45°)
+        // Гармоничность → вращение (0..45°)
         _rect.Rotation = currentSmooth * 0.785f;
 
-        // 4. Цвет — ЕДИНЫЙ конвейер: base → pitch → brightness → shiver
-        var color = new Color(0.2f, 0.6f, 1.0f);                              // базовый синий
-        color = color.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);        // высота тона
-        color = color.Lerp(Colors.White, currentBrightness * 0.5f);           // яркость
-        color = color.Lerp(Colors.Orange, currentShiver);                     // новизна
+        // Цвет — единый конвейер
+        var color = new Color(0.2f, 0.6f, 1.0f);
+        color = color.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);
+        color = color.Lerp(Colors.White, currentBrightness * 0.5f);
+        color = color.Lerp(Colors.Orange, currentShiver);
         _rect.Color = color;
     }
 
