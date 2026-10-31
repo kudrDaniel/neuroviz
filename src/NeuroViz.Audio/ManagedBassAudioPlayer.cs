@@ -10,7 +10,8 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
     private readonly AudioClockWriter? _clock;
     private int _handle;
     private long _seq;
-    private long _dspSampleCursor;   // <-- НОВОЕ: сэмплов на канал, прошедших DSP
+    private long _dspSampleCursor;   // сэмплов на канал, прошедших DSP
+    private int _seekGeneration;    // ← новое: инвалидирует in-flight кадры при seek/stop/load
     private DSPProcedure? _dsp;
     private bool _disposed;
 
@@ -61,7 +62,10 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         var info = Bass.ChannelGetInfo(_handle);
         SampleRate = info.Frequency;
         Channels = info.Channels;
+
         _seq = 0;
+        // Инвалидирует кадры от старого handle, если они ещё в полёте.
+        Interlocked.Increment(ref _seekGeneration);
         Interlocked.Exchange(ref _dspSampleCursor, 0);
 
         _dsp = OnDsp;
@@ -88,6 +92,8 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
     {
         ThrowIfDisposed();
         if (_handle == 0) return;
+
+        Interlocked.Increment(ref _seekGeneration);
         Bass.ChannelStop(_handle);
         Bass.ChannelSetPosition(_handle, 0);
         Interlocked.Exchange(ref _dspSampleCursor, 0);
@@ -98,9 +104,17 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
     {
         ThrowIfDisposed();
         if (_handle == 0) return;
+
+        // 1) Сначала сигналим «идёт перемотка» — OnDsp увидит это на своей
+        //    контрольной точке и отбросит текущий кадр.
+        Interlocked.Increment(ref _seekGeneration);
+
+        // 2) Меняем позицию BASS и наш курсор.
         var bytes = Bass.ChannelSeconds2Bytes(_handle, seconds);
         Bass.ChannelSetPosition(_handle, bytes);
         Interlocked.Exchange(ref _dspSampleCursor, (long)(seconds * SampleRate));
+
+        // 3) Обновляем общие часы — это последнее слово на этот seek.
         _clock?.Update(seconds, IsPlaying ? ClockPlaybackState.Play : ClockPlaybackState.Pause);
     }
 
@@ -111,11 +125,23 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         var totalSamples = length / sizeof(float);
         var perChannelSamples = totalSamples / Channels;
 
-        // Позиция КОНЦА буфера — это ровно тот момент, до которого доанализированы данные.
-        var endPosSec = (double)(Interlocked.Read(ref _dspSampleCursor) + perChannelSamples) / SampleRate;
+        // 1) Снимок генерации ДО мутации состояния.
+        var genBefore = Volatile.Read(ref _seekGeneration);
 
+        // 2) Атомарно продвигаем курсор; возвращённое значение — авторитетная
+        //    позиция КОНЦА буфера (уже учитывает возможный Seek до этого момента).
+        var endCursor = Interlocked.Add(ref _dspSampleCursor, perChannelSamples);
+        var endPosSec = (double)endCursor / SampleRate;
+
+        // 3) Копируем сэмплы — buffer уже заполнен BASS'ом.
         var samples = new float[totalSamples];
         Marshal.Copy(buffer, samples, 0, totalSamples);
+
+        // 4) Если за время шагов 1–3 случился Seek/Stop/Load — кадр стейл.
+        //    Отбрасываем: не эмитим, не трогаем _clock (Seek уже выставил
+        //    правильное значение), не расходуем FrameSeq.
+        if (Volatile.Read(ref _seekGeneration) != genBefore)
+            return;
 
         var frame = new PcmFrame
         {
@@ -125,8 +151,6 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
             PositionSeconds = endPosSec,
             Sequence = Interlocked.Increment(ref _seq),
         };
-
-        Interlocked.Add(ref _dspSampleCursor, perChannelSamples);
 
         PcmAvailable?.Invoke(this, frame);
         _clock?.Update(endPosSec, ClockPlaybackState.Play);
