@@ -8,9 +8,9 @@ public partial class MainNode : Node2D
     private ColorRect _rect = null!;
     private Label _statusLabel = null!;
 
-    // Храним последнее полученное значение параметра
     private ParamValue? _pulseParam;
     private ParamValue? _shiverParam;
+    private double _lastClock = 0.0; // <-- Запоминаем время последнего фрейма
 
     public override void _Ready()
     {
@@ -41,30 +41,24 @@ public partial class MainNode : Node2D
 
         if (frame != null)
         {
-            // Используем время из фрейма, а не из mmap
-            double clock = frame.AudioClockSeconds;
-            _statusLabel.Text = $"Clock: {clock:F2}s | Frame: {frame.FrameSeq} | Params: {frame.Params.Count}";
+            _lastClock = frame.AudioClockSeconds; // <-- Обновляем часы ТОЛЬКО когда пришел фрейм
+            _statusLabel.Text = $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | Params: {frame.Params.Count}";
 
-            // Обновляем параметры, если пришли новые
             if (frame.Params.TryGetValue("pulse", out var p)) _pulseParam = p;
             if (frame.Params.TryGetValue("shiver", out var s)) _shiverParam = s;
         }
 
-        // Вычисляем текущее значение параметра с учетом затухания
-        float currentPulse = 0f;
-        float currentShiver = 0f;
-        double currentClock = frame?.AudioClockSeconds ?? 0;
-
-        if (_pulseParam != null)
-            currentPulse = _pulseParam.EvaluateAt(currentClock);
-
-        if (_shiverParam != null)
-            currentShiver = _shiverParam.EvaluateAt(currentClock);
+        // Вычисляем значения на основе _lastClock
+        float currentPulse = _pulseParam?.EvaluateAt(_lastClock) ?? 0f;
+        float currentShiver = _shiverParam?.EvaluateAt(_lastClock) ?? 0f;
 
         // Визуализация
-        var scale = 1.0f + currentPulse * 0.5f; // Квадрат увеличивается до 1.5x
+        var baseColor = new Color(0.2f, 0.6f, 1.0f); // Синий
+        var targetColor = new Color(1.0f, 0.5f, 0.0f); // Оранжевый
+
+        var scale = 1.0f + currentPulse * 0.5f; // Пульс до 1.5x
         _rect.Scale = new Vector2(scale, scale);
-        _rect.Color = new Color(0.2f, 0.6f, 1.0f).Lerp(Colors.Orange, currentShiver);
+        _rect.Color = baseColor.Lerp(targetColor, currentShiver);
     }
 
     public override void _ExitTree()

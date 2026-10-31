@@ -15,7 +15,9 @@ public sealed class AnalyzerPipeline : IDisposable
     private IAudioPlayer? _player;
     private long _detectorErrors;
 
-    public AnalyzerPipeline(int sampleRate, int channels, int fftSize = 2048, int hopSize = 512, EventSink? sink = null)
+    public double LastAnalyzedTimestamp { get; private set; }
+
+    public AnalyzerPipeline(int sampleRate, int channels, int fftSize = 2048, int hopSize = 1024, EventSink? sink = null)
     {
         _ = channels;
         _sink = sink ?? new EventSink();
@@ -47,6 +49,7 @@ public sealed class AnalyzerPipeline : IDisposable
 
     private void OnPcm(object? sender, PcmFrame frame)
     {
+        LastAnalyzedTimestamp = frame.PositionSeconds;
         _stft.Push(frame.Samples, frame.Channels, frame.PositionSeconds, ProcessFrame);
     }
 
@@ -57,7 +60,7 @@ public sealed class AnalyzerPipeline : IDisposable
             try
             {
                 foreach (var ev in detector.Process(frame))
-                    _sink.Emit(ev);
+                    _sink.Emit(ev, frame);
             }
             catch
             {

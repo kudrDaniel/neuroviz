@@ -3,28 +3,27 @@ using NeuroViz.Core.Events;
 
 namespace NeuroViz.Analysis;
 
-/// <summary>
-/// Потокобезопасный выход пайплайна. Emit — из аудио-потока,
-/// чтение (TryDequeue / DrainAll) — из UI-потока.
-/// </summary>
+public sealed record AnalyzedEvent(AudioEvent Event, SpectralFrame Frame);
+
 public sealed class EventSink
 {
-    private readonly ConcurrentQueue<AudioEvent> _queue = new();
+    private readonly ConcurrentQueue<AnalyzedEvent> _queue = new();
 
-    public event Action<AudioEvent>? EventEmitted;
+    public event Action<AnalyzedEvent>? EventEmitted;
 
-    public void Emit(AudioEvent ev)
+    public void Emit(AudioEvent ev, SpectralFrame frame)
     {
-        _queue.Enqueue(ev);
-        EventEmitted?.Invoke(ev);
+        var analyzed = new AnalyzedEvent(ev, frame);
+        _queue.Enqueue(analyzed);
+        EventEmitted?.Invoke(analyzed);
     }
 
-    public bool TryDequeue(out AudioEvent? ev) => _queue.TryDequeue(out ev);
+    public bool TryDequeue(out AnalyzedEvent? analyzed) => _queue.TryDequeue(out analyzed);
 
-    public IReadOnlyList<AudioEvent> DrainAll()
+    public IReadOnlyList<AnalyzedEvent> DrainAll()
     {
-        var list = new List<AudioEvent>();
-        while (_queue.TryDequeue(out var ev)) list.Add(ev!);
+        var list = new List<AnalyzedEvent>();
+        while (_queue.TryDequeue(out var ev)) list.Add(ev);
         return list;
     }
 }

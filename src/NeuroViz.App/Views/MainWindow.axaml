@@ -19,6 +19,9 @@
             <Button Content="Stop" Command="{Binding StopCommand}" MinWidth="70" />
             <Button Content="Save project…" Click="OnSaveClicked" MinWidth="110" />
             <Button Content="Launch Visualizer" Command="{Binding LaunchVisualizerCommand}" />
+            <CheckBox Content="Debug Mode" IsChecked="{Binding IsDebugMode}" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            <Button Content="Copy Debug Table" Command="{Binding CopyDebugTableCommand}"
+                    IsVisible="{Binding IsDebugMode}" />
         </StackPanel>
 
         <!-- Row 1: позиция / таймер -->
@@ -78,6 +81,15 @@
                                     Binding="{Binding Confidence, StringFormat='{}{0:0.00}'}" />
                 <DataGridTextColumn Header="Params" Width="*"
                                     Binding="{Binding ParamsDisplay}" />
+                <DataGridTemplateColumn Header="Spectrum Snapshot" Width="150"
+                                        IsVisible="{Binding $parent[DataGrid].((vm:MainWindowViewModel)DataContext).IsDebugMode}">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <controls:SpectrumControl Values="{Binding DownsampledSpectrum}"
+                                                      Height="20" Width="140"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

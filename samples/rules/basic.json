@@ -7,11 +7,18 @@
       "when": {
         "event": "onset",
         "filters": {
-          "confidence": { "min": 0.7 }
+          "confidence": {
+            "min": 0.3
+          }
         }
       },
       "actions": [
-        { "type": "set", "param": "pulse", "value": 1.0, "decayMs": 200 }
+        {
+          "type": "set",
+          "param": "pulse",
+          "value": 1.0,
+          "decayMs": 150
+        }
       ]
     },
     {
@@ -20,12 +27,24 @@
       "when": {
         "event": "novelty",
         "filters": {
-          "params.error_magnitude": { "min": 0.5 }
+          "params.error_magnitude": {
+            "min": 4.0
+          }
         }
       },
       "actions": [
-        { "type": "set", "param": "shiver", "value": 1.0, "decayMs": 800 },
-        { "type": "set", "param": "cortex_flash", "value": 0.6, "decayMs": 400 }
+        {
+          "type": "set",
+          "param": "shiver",
+          "value": 1.0,
+          "decayMs": 1000
+        },
+        {
+          "type": "set",
+          "param": "cortex_flash",
+          "value": 0.6,
+          "decayMs": 400
+        }
       ]
     },
     {
@@ -33,10 +52,19 @@
       "priority": 50,
       "when": {
         "event": "stream_boundary",
-        "filters": { "params.open": { "eq": "1" } }
+        "filters": {
+          "params.open": {
+            "eq": "1"
+          }
+        }
       },
       "actions": [
-        { "type": "set", "param": "stream_glow", "value": 0.8, "decayMs": 1500 }
+        {
+          "type": "set",
+          "param": "stream_glow",
+          "value": 0.8,
+          "decayMs": 1500
+        }
       ]
     }
   ]

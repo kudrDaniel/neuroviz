@@ -1,5 +1,8 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
+using Avalonia;
+using Avalonia.Input.Platform;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -23,6 +26,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly RuleEngine _ruleEngine;
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
+    private bool _isLiveAnalysis = true;
+    private double _lastTickPosition = 0;
 
     public bool IsDragging { get; set; }
 
@@ -77,6 +82,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _statusText, value);
     }
 
+    private bool _isDebugMode;
+    public bool IsDebugMode
+    {
+        get => _isDebugMode;
+        set => SetProperty(ref _isDebugMode, value);
+    }
+
     public MainWindowViewModel()
     {
         _clock = new AudioClockWriter();
@@ -105,33 +117,55 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         IsPlaying = _player.IsPlaying;
         DetectorErrors = _pipeline?.DetectorErrors ?? 0;
 
-        if (_pipeline is not null)
+        if (!IsPlaying) return;
+
+        var paramValues = new Dictionary<string, ParamValue>();
+        List<AudioEvent> eventsToSend = new();
+        double currentPos = _player.Position;
+
+        if (_isLiveAnalysis && _pipeline != null)
         {
+            // LIVE РЕЖИМ: берем точное время из анализатора и забираем ВСЕ новые события
+            currentPos = _pipeline.LastAnalyzedTimestamp;
             var batch = _pipeline.Sink.DrainAll();
-            var paramValues = new Dictionary<string, ParamValue>();
 
-            foreach (var ev in batch)
+            foreach (var analyzed in batch)
             {
-                Events.Add(EventRow.From(ev));
-
-                // Оцениваем правила
-                foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
+                // Добавляем в UI
+                if (!Events.Any(r => Math.Abs(r.Timestamp - analyzed.Event.TimestampSeconds) < 0.01))
                 {
-                    paramValues[action.Action.Param] = new ParamValue
-                    {
-                        Value = action.Action.Value,
-                        SetAtSeconds = action.AtSeconds,
-                        DecayMs = action.Action.DecayMs
-                    };
+                    Events.Add(EventRow.From(analyzed));
                 }
-            }
-
-            if (CurrentFilePath != null)
-            {
-                // Отправляем кадр в Godot (даже если batch пустой, чтобы слать audio clock)
-                _ipcServer.PushFrame(_player.Position, batch, paramValues);
+                eventsToSend.Add(analyzed.Event);
             }
         }
+        else
+        {
+            // REPLAY РЕЖИМ: ищем события в памяти за прошедший тик (с запасом 50 мс назад)
+            var windowStart = _lastTickPosition - 0.05;
+            eventsToSend = Events
+                .Where(r => r.Timestamp > windowStart && r.Timestamp <= currentPos)
+                .Select(r => r.Source)
+                .ToList();
+        }
+
+        // Применяем правила к найденным событиям
+        foreach (var ev in eventsToSend)
+        {
+            foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
+            {
+                paramValues[action.Action.Param] = new ParamValue
+                {
+                    Value = action.Action.Value,
+                    SetAtSeconds = action.AtSeconds,
+                    DecayMs = action.Action.DecayMs
+                };
+            }
+        }
+
+        // Отправляем в Godot (даже если пусто, чтобы обновить часы)
+        _ipcServer.PushFrame(currentPos, eventsToSend, paramValues);
+        _lastTickPosition = currentPos;
     }
 
     public async Task LoadFileAsync(string path)
@@ -147,8 +181,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Duration = _player.Duration;
             CurrentFilePath = path;
 
+            _isLiveAnalysis = true;
+            _lastTickPosition = 0;
+
             _pipeline = new AnalyzerPipeline(_player.SampleRate, _player.Channels);
-            _pipeline.AddDetector(new OnsetDetector());
+            _pipeline.AddDetector(new OnsetDetector(historySize: 20, thresholdMult: 2.2f, refractorySeconds: 0.07));
+            _pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
             _pipeline.Attach(_player);
 
             Position = 0;
@@ -168,6 +206,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private void Play()
     {
         if (CurrentFilePath is null) return;
+
+        // Если мы начинаем с самого начала, включаем Live-анализ
+        if (_player.Position < 0.1)
+        {
+            _isLiveAnalysis = true;
+        }
+
         _player.Play();
         IsPlaying = true;
     }
@@ -186,6 +231,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         Position = 0;
         SliderPosition = 0;
         IsPlaying = false;
+        _lastTickPosition = 0;
     }
 
     [RelayCommand]
@@ -199,6 +245,27 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         StatusText = "Visualizer launched";
     }
 
+    [RelayCommand]
+    private async Task CopyDebugTableAsync()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Time(s)\tType\tConf\tParams\tSpectrum(32 bands)");
+        foreach (var row in Events)
+        {
+            sb.AppendLine($"{row.Timestamp:F3}\t{row.Type}\t{row.Confidence:F2}\t{row.ParamsDisplay}\t{row.SpectrumString}");
+        }
+
+        var window = Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop
+            ? desktop.MainWindow
+            : null;
+
+        if (window?.Clipboard is { } clipboard)
+        {
+            await clipboard.SetTextAsync(sb.ToString());
+            StatusText = "Debug table copied to clipboard!";
+        }
+    }
+
     private void StopPlayback()
     {
         if (CurrentFilePath is not null) _player.Stop();
@@ -210,6 +277,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _player.Seek(seconds);
         Position = seconds;
         SliderPosition = seconds;
+        _lastTickPosition = seconds; // Синхронизируем окно отправки
+        _isLiveAnalysis = false;     // Переключаемся на воспроизведение из памяти!
+        _pipeline?.Reset();          // Сбрасываем историю детекторов
     }
 
     public async Task SaveProjectAsync(string targetPath)

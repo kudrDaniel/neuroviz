@@ -13,7 +13,11 @@ public sealed class ParamValue
     {
         if (DecayMs <= 0) return Value;
         var age = nowSeconds - SetAtSeconds;
-        if (age < 0) return Value;
+
+        // Если событие еще не наступило (мы перемотали назад), 
+        // параметр должен быть равен 0, а не максимуму!
+        if (age < 0) return 0f;
+
         var k = (float)Math.Exp(-age / (DecayMs / 1000.0));
         return Value * k;
     }

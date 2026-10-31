@@ -28,7 +28,7 @@ public class AnalyzerPipelineIntegrationTests
             var events = new List<AudioEvent>();
             pipeline.Sink.EventEmitted += ev =>
             {
-                lock (events) events.Add(ev);
+                lock (events) events.Add(ev.Event);
             };
 
             pipeline.Attach(player);
@@ -71,7 +71,7 @@ public class AnalyzerPipelineIntegrationTests
         using var pipeline = new AnalyzerPipeline(player.SampleRate, player.Channels);
         pipeline.AddDetector(new OnsetDetector());
         pipeline.Sink.EventEmitted += ev =>
-            Console.WriteLine($"[{ev.TimestampSeconds:F3}] {ev.Type} conf={ev.Confidence:F2}");
+            Console.WriteLine($"[{ev.Event.TimestampSeconds:F3}] {ev.Event.Type} conf={ev.Event.Confidence:F2}");
         pipeline.Attach(player);
         player.Play();
         await Task.Delay(TimeSpan.FromSeconds(20));
