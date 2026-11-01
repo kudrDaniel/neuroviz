@@ -6,6 +6,7 @@ using Avalonia.Platform.Storage;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using NeuroViz.App.ViewModels;
+using NeuroViz.Project;
 
 namespace NeuroViz.App.Views;
 
@@ -103,6 +104,63 @@ public partial class MainWindow : Window
 
         if (files.Count > 0 && files[0].Path.LocalPath is { } local)
             await ViewModel.LoadFileAsync(local);
+    }
+
+    private async void OnLoadProjectClicked(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Open NeuroViz project",
+            AllowMultiple = false,
+            FileTypeFilter = new[]
+            {
+            new FilePickerFileType("NeuroViz project")
+            {
+                Patterns = new[] { "*.nvproj" },
+            },
+        },
+        });
+
+        if (files.Count == 0) return;
+        await LoadProjectWithAudioResolutionAsync(files[0].Path.LocalPath);
+    }
+
+    /// <summary>
+    /// Пытается загрузить проект; при отсутствии аудио спрашивает
+    /// пользователя и повторяет с overrideAudioPath.
+    /// </summary>
+    private async Task LoadProjectWithAudioResolutionAsync(
+        string projectPath, string? overrideAudioPath = null)
+    {
+        try
+        {
+            await ViewModel.LoadProjectAsync(projectPath, overrideAudioPath);
+        }
+        catch (AudioNotFoundException)
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "Locate audio file for this project",
+                AllowMultiple = false,
+                FileTypeFilter = new[]
+                {
+                new FilePickerFileType("Audio")
+                {
+                    Patterns = new[] { "*.wav", "*.mp3", "*.ogg", "*.flac" },
+                },
+            },
+            });
+
+            if (files.Count == 0)
+            {
+                ViewModel.StatusText = "Load cancelled: audio file not selected";
+                return;
+            }
+
+            // Повторная попытка с override: рекурсия останавливается,
+            // потому что overrideAudioPath гарантированно существует.
+            await LoadProjectWithAudioResolutionAsync(projectPath, files[0].Path.LocalPath);
+        }
     }
 
     private async void OnSaveClicked(object? sender, RoutedEventArgs e)

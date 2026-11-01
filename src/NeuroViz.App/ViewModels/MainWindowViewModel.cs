@@ -23,12 +23,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ManagedBassAudioPlayer _player;
     private readonly DispatcherTimer _timer;
     private readonly IpcServer _ipcServer;
-    private readonly RuleEngine _ruleEngine;
-    private readonly RulesDocument _rulesDocument;
+    private RuleEngine _ruleEngine;
+    private RulesDocument _rulesDocument;
+    private readonly ProjectLoader _projectLoader = new();
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
     private bool _isLiveAnalysis = true;
     private double _lastTickPosition = 0;
+
+    private enum ProjectSource { None, Live, Imported }
+    private ProjectSource _projectSource = ProjectSource.None;
 
     private readonly CancellationTokenSource _lifetimeCts = new();
 
@@ -217,6 +221,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _lastTickPosition = currentPos;
     }
 
+    private AnalyzerPipeline CreateAnalyzerPipeline()
+    {
+        var pipeline = new AnalyzerPipeline(_player.SampleRate, _player.Channels);
+        pipeline.AddDetector(new OnsetDetector(historySize: 20, thresholdMult: 2.2f, refractorySeconds: 0.07));
+        pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
+        pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
+        pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
+        pipeline.AddDetector(new SpectralFeaturesDetector(refractorySeconds: 0.05));
+        return pipeline;
+    }
+
     public async Task LoadFileAsync(string path)
     {
         try
@@ -231,14 +246,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             Duration = _player.Duration;
             CurrentFilePath = path;
 
-            _pipeline = new AnalyzerPipeline(_player.SampleRate, _player.Channels);
-            _pipeline.AddDetector(new OnsetDetector(historySize: 20, thresholdMult: 2.2f, refractorySeconds: 0.07));
-            _pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
-            _pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
-            _pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
-            _pipeline.AddDetector(new SpectralFeaturesDetector(refractorySeconds: 0.05));
-
+            _pipeline = CreateAnalyzerPipeline();
             SwitchToLive();
+            _projectSource = ProjectSource.Live;
 
             Position = 0;
             SliderPosition = 0;
@@ -258,9 +268,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (CurrentFilePath is null) return;
 
-        // Если играем с начала, а мы в replay (после seek) — возвращаемся в live.
-        if (!_isLiveAnalysis && _player.Position < 0.1)
+        // Возврат в live — только для «живого» проекта и только с начала.
+        // Импортированный проект всегда играет из памяти.
+        if (_projectSource == ProjectSource.Live
+            && !_isLiveAnalysis
+            && _player.Position < 0.1)
+        {
             SwitchToLive();
+        }
 
         _player.Play();
         IsPlaying = true;
@@ -281,6 +296,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         SliderPosition = 0;
         IsPlaying = false;
         _lastTickPosition = 0;
+        _projectSource = ProjectSource.None;
     }
 
     [RelayCommand]
@@ -370,8 +386,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _player.Seek(seconds);
         Position = seconds;
         SliderPosition = seconds;
-        _pipeline?.Reset();
-        SwitchToReplay();   // detach + сброс sink + флаг
+        _lastTickPosition = seconds;
+
+        // Reset + SwitchToReplay нужны только для «живого» проекта.
+        // Импортированный уже в replay, трогать pipeline нет смысла.
+        if (_projectSource == ProjectSource.Live)
+        {
+            _pipeline?.Reset();
+            SwitchToReplay();
+        }
     }
 
     public async Task SaveProjectAsync(string targetPath)
@@ -385,12 +408,26 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             var timeline = new EventTimeline
             {
-                // ... без изменений
+                AudioPath = Path.GetFullPath(CurrentFilePath),
+                AudioSha256 = sha,
+                DurationSeconds = Duration,
+                Events = Events.Select(r => r.Source).ToList(),
+                AnalysisMeta =
+            {
+                ["sampleRate"] = _player.SampleRate.ToString(),
+                ["channels"]   = _player.Channels.ToString(),
+                // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
+                // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
+                ["detectors"]  = "onset,novelty,pitch,azimuth,spectral_features",
+            },
             };
 
             var project = new ProjectDocument
             {
-                // ... без изменений
+                Name = Path.GetFileNameWithoutExtension(CurrentFilePath),
+                CreatedAt = DateTimeOffset.UtcNow,
+                Timeline = timeline,
+                Rules = _rulesDocument,   // ← фикс: правила попадают в .nvproj
             };
 
             ProjectSerializer.Save(project, targetPath);
@@ -403,6 +440,86 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             StatusText = $"Save failed: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Загружает .nvproj: восстанавливает аудио, события, правила.
+    /// Если аудио из проекта не резолвится — бросает <see cref="AudioNotFoundException"/>,
+    /// и View предлагает пользователю найти файл вручную.
+    /// </summary>
+    public async Task LoadProjectAsync(
+        string projectPath,
+        string? overrideAudioPath = null)
+    {
+        try
+        {
+            var loaded = await _projectLoader.LoadAsync(projectPath, _lifetimeCts.Token);
+
+            var audioPath = overrideAudioPath ?? loaded.AudioPath;
+            if (audioPath is null || !File.Exists(audioPath))
+                throw new AudioNotFoundException(loaded.Document.Timeline.AudioPath);
+
+            // 1. Сброс текущего состояния.
+            StopPlayback();
+            Events.Clear();
+            _eventKeys.Clear();
+            _pipeline?.Dispose();
+            _pipeline = null;
+
+            // 2. Аудио в плеер.
+            _player.Load(audioPath);
+            Duration = _player.Duration;
+            CurrentFilePath = audioPath;
+
+            // 3. Восстановление событий.
+            foreach (var ev in loaded.Document.Timeline.Events)
+            {
+                _eventKeys.Add((ev.Type, ToTickMs(ev.TimestampSeconds)));
+                Events.Add(EventRow.FromStored(ev));
+            }
+
+            // 4. Правила из проекта, если там не пусто.
+            //    Если пусто — оставляем уже загруженные из basic.json.
+            if (loaded.Document.Rules.Rules.Count > 0)
+            {
+                _rulesDocument = loaded.Document.Rules;
+                _ruleEngine = new RuleEngine(_rulesDocument);
+            }
+
+            // 5. Создаём pipeline для будущего Re-analyze (MVP-D),
+            //    но НЕ attach'им — события уже есть.
+            _pipeline = CreateAnalyzerPipeline();
+
+            // 6. State machine.
+            _projectSource = ProjectSource.Imported;
+            _isLiveAnalysis = false;
+            _lastTickPosition = 0;
+
+            // 7. Статус — предупреждение при несовпадении хеша.
+            if (overrideAudioPath is null && loaded.Integrity == AudioIntegrity.Mismatch)
+            {
+                StatusText = $"Loaded {Events.Count} events. " +
+                             "Warning: audio changed since analysis; timeline may be misaligned.";
+            }
+            else
+            {
+                StatusText = $"Loaded {Events.Count} events from " +
+                             $"{Path.GetFileName(projectPath)}";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Load cancelled";
+        }
+        catch (AudioNotFoundException)
+        {
+            // View ловит и открывает диалог поиска файла.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Load failed: {ex.Message}";
         }
     }
 
