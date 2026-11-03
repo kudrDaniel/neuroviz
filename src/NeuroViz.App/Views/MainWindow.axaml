@@ -19,6 +19,7 @@
       <Button Content="Pause" Command="{Binding PauseCommand}" MinWidth="70" />
       <Button Content="Stop" Command="{Binding StopCommand}" MinWidth="70" />
       <Button Content="Save project…" Click="OnSaveClicked" MinWidth="110" />
+      <Button Content="Reload Rules" Command="{Binding ReloadRulesCommand}" MinWidth="110" />
       <Button Content="Launch Visualizer" Click="OnLaunchVisualizerClicked" />
       <CheckBox Content="Debug Mode" IsChecked="{Binding IsDebugMode}" VerticalAlignment="Center" Margin="10,0,0,0"/>
       <Button Content="Copy Debug Table" Command="{Binding CopyDebugTableCommand}"

@@ -243,4 +243,46 @@ public class ProjectLoaderTests
             try { Directory.Delete(Path, recursive: true); } catch { }
         }
     }
+
+    // ─── Save-relative (A2-polish) ─────────────────────────────────
+
+    [Fact]
+    public void ForStorage_SameDrive_ReturnsRelative()
+    {
+        using var tmp = new TempDir();
+        var audioDir = Path.Combine(tmp.Path, "audio");
+        Directory.CreateDirectory(audioDir);
+        var audio = Path.Combine(audioDir, "a.wav");
+        ToneWavWriter.WriteSine(audio, 0.2);
+
+        var stored = ProjectLoader.AudioPathHelper.ForStorage(audio, tmp.Path);
+
+        Assert.Equal(Path.Combine("audio", "a.wav"), stored);
+    }
+
+    [Fact]
+    public async Task SaveRelative_ThenLoad_ResolvesAudio()
+    {
+        using var tmp = new TempDir();
+        var audioDir = Path.Combine(tmp.Path, "audio");
+        Directory.CreateDirectory(audioDir);
+        var audio = Path.Combine(audioDir, "a.wav");
+        ToneWavWriter.WriteSine(audio, 0.2);
+
+        var doc = new ProjectDocument
+        {
+            Name = "t",
+            Timeline = new EventTimeline
+            {
+                AudioPath = ProjectLoader.AudioPathHelper.ForStorage(audio, tmp.Path),
+                DurationSeconds = 0.2,
+            },
+        };
+        var projectPath = Path.Combine(tmp.Path, "p.nvproj");
+        ProjectSerializer.Save(doc, projectPath);
+
+        var loaded = await new ProjectLoader().LoadAsync(projectPath);
+        Assert.Equal(audio, loaded.AudioPath);
+        Assert.Equal(AudioIntegrity.NotChecked, loaded.Integrity); // нет хеша
+    }
 }

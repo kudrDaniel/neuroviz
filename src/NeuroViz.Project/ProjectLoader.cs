@@ -102,6 +102,26 @@ public sealed class ProjectLoader
         return null;
     }
 
+    /// <summary>
+    /// Companion to <see cref="ProjectLoader.ResolveAudioPath"/>: produces the
+    /// path to embed in .nvproj. Relative to <paramref name="projectDir"/> when
+    /// both live on the same drive (Windows) / filesystem root (Unix); falls back
+    /// to absolute otherwise (e.g. project on C:, audio on D:).
+    /// </summary>
+    public static class AudioPathHelper
+    {
+        public static string ForStorage(string audioAbsolutePath, string projectDir)
+        {
+            var absAudio = Path.GetFullPath(audioAbsolutePath);
+            var absDir = Path.GetFullPath(projectDir);
+            var rootAudio = Path.GetPathRoot(absAudio);
+            var rootDir = Path.GetPathRoot(absDir);
+            if (!string.Equals(rootAudio, rootDir, StringComparison.OrdinalIgnoreCase))
+                return absAudio;
+            return Path.GetRelativePath(absDir, absAudio);
+        }
+    }
+
     private static async Task<AudioIntegrity> CheckAudioAsync(
         string? audioPath, string storedSha256, CancellationToken ct)
     {

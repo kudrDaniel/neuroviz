@@ -23,8 +23,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private readonly ManagedBassAudioPlayer _player;
     private readonly DispatcherTimer _timer;
     private readonly IpcServer _ipcServer;
-    private RuleEngine _ruleEngine;
-    private RulesDocument _rulesDocument;
+    private readonly RulesHolder _rulesHolder;
     private readonly ProjectLoader _projectLoader = new();
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
@@ -128,8 +127,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             rulesDoc = RulesLoader.FromJson("{ \"version\": 1, \"rules\": [] }");
         }
 
-        _rulesDocument = rulesDoc;
-        _ruleEngine = new RuleEngine(_rulesDocument);
+        _rulesHolder = new RulesHolder(rulesDoc, rulesPath);
     }
 
     private string? ResolveRulesPath()
@@ -203,7 +201,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         foreach (var ev in eventsToSend)
         {
             var paramsInThisEvent = new HashSet<string>();
-            foreach (var action in _ruleEngine.Process(ev, ev.TimestampSeconds))
+            foreach (var action in _rulesHolder.Engine.Process(ev, ev.TimestampSeconds))
             {
                 if (!paramsInThisEvent.Add(action.Param))
                     continue;
@@ -355,6 +353,26 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private void ReloadRules()
+    {
+        // Если активные правила пришли из проекта (SourcePath == null),
+        // fallback на стандартный порядок разрешения пути. Так Reload
+        // работает и после Load project — предсказуемо.
+        var path = _rulesHolder.SourcePath ?? ResolveRulesPath();
+        if (path is null)
+        {
+            StatusText = "Rules reload failed: no rules file found";
+            return;
+        }
+
+        if (_rulesHolder.TryReload(path))
+            StatusText = $"Rules reloaded from {Path.GetFileName(path)} " +
+                         $"({_rulesHolder.Document.Rules.Count} rules)";
+        else
+            StatusText = $"Rules reload failed: {_rulesHolder.LastError}";
+    }
+
+    [RelayCommand]
     private async Task CopyDebugTableAsync()
     {
         var sb = new System.Text.StringBuilder();
@@ -406,9 +424,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             StatusText = $"Computing SHA-256 for {Path.GetFileName(CurrentFilePath)}…";
             var sha = await ComputeSha256Async(CurrentFilePath, _lifetimeCts.Token);
 
+            var projectDir = Path.GetDirectoryName(Path.GetFullPath(targetPath)) ?? "";
             var timeline = new EventTimeline
             {
-                AudioPath = Path.GetFullPath(CurrentFilePath),
+                AudioPath = ProjectLoader.AudioPathHelper.ForStorage(CurrentFilePath, projectDir),
                 AudioSha256 = sha,
                 DurationSeconds = Duration,
                 Events = Events.Select(r => r.Source).ToList(),
@@ -427,7 +446,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 Name = Path.GetFileNameWithoutExtension(CurrentFilePath),
                 CreatedAt = DateTimeOffset.UtcNow,
                 Timeline = timeline,
-                Rules = _rulesDocument,   // ← фикс: правила попадают в .nvproj
+                Rules = _rulesHolder.Document,
             };
 
             ProjectSerializer.Save(project, targetPath);
@@ -482,10 +501,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             // 4. Правила из проекта, если там не пусто.
             //    Если пусто — оставляем уже загруженные из basic.json.
             if (loaded.Document.Rules.Rules.Count > 0)
-            {
-                _rulesDocument = loaded.Document.Rules;
-                _ruleEngine = new RuleEngine(_rulesDocument);
-            }
+                _rulesHolder.SetDocument(loaded.Document.Rules, sourcePath: null);
 
             // 5. Создаём pipeline для будущего Re-analyze (MVP-D),
             //    но НЕ attach'им — события уже есть.
