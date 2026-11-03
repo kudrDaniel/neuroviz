@@ -89,6 +89,30 @@
 `confidence` у azimuth, увидят другой диапазон значений — правьте
 пороги или переходите на `params.azimuth_norm`.
 
+### OffsetDetector (Затухания, «выдохи»)
+Зеркало `OnsetDetector` на падающем фронте спектра. Срабатывает в момент
+резкого затихания — конец ноты, конец фразы, начало паузы.
+
+* **`historySize`** (по умолчанию `20`): Окно истории фреймов для порога
+  на `decline` (= magnitude отрицательного flux).
+* **`thresholdMult`** (по умолчанию `2.2`): Множитель std — как у onset.
+* **`refractorySeconds`** (по умолчанию `0.07`): Время после offset,
+  когда новый не срабатывает.
+* **`confidenceCapacity`** (по умолчанию = `historySize`): Окно *событий*
+  для percentile. Аналог onset.
+* **`confidenceMinHistory`** (по умолчанию = `max(3, historySize/4)`):
+  Warm-up. Первые `minHistory` offset'ов получают `confidence = 0.5`.
+
+**Params:** `decline` (текущая величина падения), `threshold` (порог).
+Для фильтров на абсолютную силу падения используйте
+`params.decline: { min: N }`; для относительной — `confidence: { min: X }`
+(как в `offset-release`: `min: 0.6`).
+
+**Про warm-up:** первые 3–5 offset'ов имеют `confidence = 0.5` — сравнить
+не с чем. Если в треке меньше 5 затиханий (сплошной эмбиент) — confidence
+так и останется 0.5 для всех; правило `offset-release` с `min: 0.6` их
+отсечёт. Это корректное поведение: «не с чем сравнить» → не выделяем.
+
 ---
 
 ## Уровень 1.5. Continuous params (B2)
@@ -109,18 +133,21 @@ replay), визуализатор держит последнее значени
 |---|---|---|---|
 | `spectral_centroid` | 0..1 | `SpectralFeaturesDetector` | Яркость спектра (высокие частоты → 1) |
 | `harmonicity` | 0..1 | `SpectralFeaturesDetector` | 1 = чистый тон, 0 = шум |
+| `band_energy.low` | 0..1 | `BandEnergyDetector` | Доля RMS в 20–250 Гц от общей |
+| `band_energy.mid` | 0..1 | `BandEnergyDetector` | Доля RMS в 250–2000 Гц |
+| `band_energy.high` | 0..1 | `BandEnergyDetector` | Доля RMS в 2000–8000 Гц |
 
-### Использование в Godot
+**Свойства `band_energy` (B3):**
+- Три полосы **не перекрываются** → `low + mid + high = 1.0` при ненулевой энергии.
+- **Нормированы на общую энергию** — не зависят от громкости: тихий бас и громкий бас дают одинаковый `band_energy.low`.
+- В тишине (`total < 1e-5`) все три = 0.0 (активный ноль, чтобы визуализатор «схлопнулся», а не замер на последних громких значениях).
 
-`MainNode._Process` читает `frame.ContinuousParams` и использует
-значения напрямую:
+**Использование в Godot (B3 acceptance):** `_bandRect` в `MainNode`:
+- `Scale` ← `band_energy.low` (бочка/бас → раздувается)
+- `Color` ← `band_energy.high` (тарелки/хай-хэт → эмиссивный жёлтый)
+- `Position.Y` ← `band_energy.mid` (вокал/средние → подпрыгивает)
 
-```csharp
-if (frame.ContinuousParams.TryGetValue("spectral_centroid", out var c))
-    _contCentroid = c;
-// ...
-var contScale = 0.3f + _smoothCentroid * 2.5f;
-_contRect.Scale = new Vector2(contScale, contScale);
+Полосы настраиваются через ctor `BandEnergyDetector(lowLo, lowHi, midHi, highHi)` — например, `new BandEnergyDetector(lowHi: 200, midHi: 1500, highHi: 10000)` для более «сжатой» середины. Дефолты (20/250/2000/8000) — под музыкальный материал.;
 
 ---
 
@@ -150,6 +177,10 @@ _contRect.Scale = new Vector2(contScale, contScale);
   * `baseColor` — базовый синий `(0.2, 0.6, 1.0)`.
   * `targetColor` — оранжевый `(1.0, 0.5, 0.0)`.
   * Если хотите красный цвет — меняйте `targetColor` на `(1.0, 0.0, 0.0)`.
+* **`release`** (от offset): Уменьшает **масштаб** (`Scale`). В коде:
+  `scale = max(0.3, 1.0 + pulse*0.5 - release*0.35)`. Пульс раздувает,
+  release сжимает — «вдох/выдох» в такт. Если хотите более резкий
+  выдох — увеличьте `0.35f`; для «намёка» — уменьшите до `0.2f`.
 
 ### Затухание
 Параметры в Godot вычисляются через `ParamValue.EvaluateAt(clock)`, который экспоненциально затухает на основе `decayMs` из JSON. Визуал всегда плавный, независимо от частоты кадров.
