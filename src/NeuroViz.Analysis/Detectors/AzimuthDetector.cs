@@ -6,14 +6,28 @@ namespace NeuroViz.Analysis.Detectors;
 public sealed class AzimuthDetector : IPcmEventDetector
 {
     private readonly double _refractorySeconds;
+    private readonly PercentileConfidence _confidence;
     private double _lastEventSeconds = double.NegativeInfinity;
 
-    public AzimuthDetector(double refractorySeconds = 0.05)
+    public AzimuthDetector(
+        double refractorySeconds = 0.05,
+        int? confidenceCapacity = null,
+        int? confidenceMinHistory = null)
     {
         _refractorySeconds = refractorySeconds;
+
+        // Up to 20 events/s (refractory 0.05s). ~1s window of recent panning.
+        _confidence = new PercentileConfidence(
+            confidenceCapacity ?? 20,
+            confidenceMinHistory ?? 5);
     }
 
-    public void Reset() => _lastEventSeconds = double.NegativeInfinity;
+    public void Reset()
+    {
+        _lastEventSeconds = double.NegativeInfinity;
+        _confidence.Reset();
+    }
+
     public IEnumerable<AudioEvent> Process(SpectralFrame frame) => Array.Empty<AudioEvent>();
 
     public IEnumerable<AudioEvent> ProcessPcm(PcmFrame frame)
@@ -47,12 +61,22 @@ public sealed class AzimuthDetector : IPcmEventDetector
 
         _lastEventSeconds = frame.PositionSeconds;
 
-        // Выдаем событие панорамы
+        // Semantic change from B1a's predecessor: previously |ildNorm| was
+        // used directly as confidence. Now confidence is the percentile of
+        // |ildNorm| across recent events — "how unusual is this panning
+        // relative to recent material?" The raw ILD remains in
+        // params.azimuth_norm; rules that want absolute magnitude should
+        // read it via param_from_event (which is what basic.json's
+        // azimuth-pan rule already does).
+        float panMagnitude = MathF.Abs(ildNorm);
+        var conf = _confidence.Estimate(panMagnitude);
+        _confidence.Observe(panMagnitude);
+
         yield return new AudioEvent
         {
             Type = EventTypes.AzimuthEstimate,
             TimestampSeconds = frame.PositionSeconds,
-            Confidence = MathF.Abs(ildNorm), // Уверенность = насколько далеко от центра
+            Confidence = conf,
             SourceLayer = 1,
             Params = new Dictionary<string, float>
             {

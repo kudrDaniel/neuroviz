@@ -9,6 +9,7 @@ public sealed class NoveltyDetector : IEventDetector
     private readonly float _thresholdMult;
     private readonly double _refractorySeconds;
     private readonly Queue<float> _errorHistory = new();
+    private readonly PercentileConfidence _confidence;
 
     private float[] _predictedMags = Array.Empty<float>();
     private float _prevError;
@@ -17,17 +18,28 @@ public sealed class NoveltyDetector : IEventDetector
     private readonly float _minVolume;
 
     public NoveltyDetector(
-    float alpha = 0.01f,              // было 0.1f
-    int historySize = 50,             // было 30
-    float thresholdMult = 2.5f,       // было 2.0f
-    double refractorySeconds = 1.5,   // было 0.4
-    float minVolume = 0.5f)
+        float alpha = 0.01f,
+        int historySize = 50,
+        float thresholdMult = 2.5f,
+        double refractorySeconds = 1.5,
+        float minVolume = 0.5f,
+        int? confidenceCapacity = null,
+        int? confidenceMinHistory = null)
     {
         _alpha = alpha;
         _historySize = historySize;
         _thresholdMult = thresholdMult;
         _refractorySeconds = refractorySeconds;
         _minVolume = minVolume;
+
+        // Novelty events are rare (refractory 1.5s → ≤0.7/s). A 20-event
+        // window covers 30+ seconds of recent section changes, which is the
+        // right scale for "is this change unusual for this track?". Warm-up
+        // at 3 events keeps first section changes from being misclassified
+        // as extreme; before 3 events all confidence = 0.5.
+        _confidence = new PercentileConfidence(
+            confidenceCapacity ?? 20,
+            confidenceMinHistory ?? 3);
     }
 
     public void Reset()
@@ -36,6 +48,7 @@ public sealed class NoveltyDetector : IEventDetector
         _predictedMags = Array.Empty<float>();
         _prevError = 0f;
         _lastEventSeconds = double.NegativeInfinity;
+        _confidence.Reset();
     }
 
     public IEnumerable<AudioEvent> Process(SpectralFrame frame)
@@ -62,7 +75,6 @@ public sealed class NoveltyDetector : IEventDetector
             _predictedMags[i] = _alpha * mags[i] + (1f - _alpha) * _predictedMags[i];
         }
 
-        // 1. Порог тишины. Если в треке тихо, мы просто привыкаем к тишине.
         float rmsMag = sumMag / mags.Length;
         if (rmsMag < _minVolume)
         {
@@ -70,8 +82,6 @@ public sealed class NoveltyDetector : IEventDetector
             yield break;
         }
 
-        // 2. Просто берем среднюю квадратичную ошибку.
-        // Она уже адекватно отражает новизну (обычно значения от 1.0 до 20.0)
         float normalizedError = MathF.Sqrt(l2Error / mags.Length);
 
         if (_errorHistory.Count < _historySize)
@@ -101,7 +111,12 @@ public sealed class NoveltyDetector : IEventDetector
         if (isRisingEdge)
         {
             _lastEventSeconds = frame.TimestampSeconds;
-            var conf = Math.Clamp((normalizedError - threshold) / (threshold + 1e-6f), 0f, 1f);
+
+            // Percentile of normalizedError across recent novelty events.
+            // Raw magnitude remains in params.error_magnitude for rules that
+            // need an absolute threshold (e.g. novelty-shiver's min: 4.0).
+            var conf = _confidence.Estimate(normalizedError);
+            _confidence.Observe(normalizedError);
 
             yield return new AudioEvent
             {

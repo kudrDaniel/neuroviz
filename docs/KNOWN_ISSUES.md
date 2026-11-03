@@ -51,19 +51,28 @@ B1b/B1c.
    плотном материале для каждого детектора.
 
 **Прогресс:**
-- ✅ **B1a**: `OnsetDetector` переведён на `PercentileConfidence`.
-  `confidence` = mid-rank перцентиль текущего флюкса среди последних N
-  *событий* (не фреймов). Warm-up (`< confidenceMinHistory` событий) →
-  `confidence = 0.5`. См. тест `QuietMaterial_ConfidenceDistributedNotSaturated`.
-- ⏳ **B1b**: `NoveltyDetector`, `PitchDetector`, `AzimuthDetector`.
-- ⏳ **B1c**: `SpectralFeaturesDetector` (убрать hardcoded `Confidence = 1f`),
-  финальный проход по `TUNING.md`.
+- ✅ **B1a**: `OnsetDetector` → `PercentileConfidence`. `confidence` =
+  mid-rank перцентиль `flux` среди последних N onset-событий. Warm-up
+  (`< confidenceMinHistory`) → `0.5`. Регрессионный тест
+  `QuietMaterial_ConfidenceDistributedNotSaturated`.
+- ✅ **B1b**: `NoveltyDetector`, `PitchDetector`, `AzimuthDetector` →
+  `PercentileConfidence`.
+  - Novelty: перцентиль `normalizedError`. Warm-up 3 события (≈4.5s).
+  - Pitch: перцентиль `maxHps`. Убран `maxHps/(maxHps+10)` — не
+    насыщается на пианино.
+  - Azimuth: перцентиль `|ildNorm|` (семантика сменилась с
+    «абсолютная панорама» на «необычность панорамы», `basic.json`
+    не затронут — правило использует `param_from_event`).
+  - Регрессионные тесты `Confidence_Distributed_NotSaturated` в
+    каждом из трёх файлов.
+- ⏳ **B1c**: `SpectralFeaturesDetector` (убрать hardcoded
+  `Confidence = 1f`); финальный проход по `TUNING.md`.
 
-**Заблокировано на:** ~~5.1 (аллокации в аудио-колбэке)~~ — блокер снят,
-`AnalyzerPipeline` уже выносит всю тяжёлую работу из аудио-колбэка на
-отдельный поток (видно в `AnalyzerPipeline.OnPcm` — там только
-`_queue.Writer.TryWrite(frame)`).
+**Заблокировано на:** — блокер снят, `AnalyzerPipeline` выносит всю
+тяжёлую работу из аудио-колбэка на отдельный поток.
 
-**Обходной путь:** для правила `onset-pulse` больше не нужен —
-`confidence` больше не насыщается на C418 Sweden. Для остальных
-детекторов — до B1b/B1c применяйте временное удаление правил.
+**Обходной путь:** — не требуется для onset/novelty/pitch/azimuth.
+Остаётся один hardcoded-`Confidence = 1f` в `SpectralFeaturesDetector`;
+до B1c правила, фильтрующие по `confidence` на `spectral_centroid` /
+`harmonicity`, всё ещё будут проходить всегда. В `basic.json` таких
+правил нет (обе используют `param_from_event`).
