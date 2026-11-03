@@ -4,24 +4,37 @@ namespace NeuroViz.Analysis.Detectors;
 
 public sealed class OnsetDetector : IEventDetector
 {
+    private const float WarmupConfidence = 0.5f;
+
     private readonly int _historySize;
     private readonly float _thresholdMult;
     private readonly double _refractorySeconds;
     private readonly Queue<float> _fluxHistory = new();
+    private readonly PercentileConfidence _confidence;
 
     private float[] _prevMags = Array.Empty<float>();
     private float _prevFlux;
     private double _lastOnsetSeconds = double.NegativeInfinity;
 
     public OnsetDetector(
-    int historySize = 20,
-    float thresholdMult = 2.2f,       // было 1.5f
-    double refractorySeconds = 0.07)  // было 0.03
+        int historySize = 20,
+        float thresholdMult = 2.2f,
+        double refractorySeconds = 0.07,
+        int? confidenceCapacity = null,
+        int? confidenceMinHistory = null)
     {
         if (historySize < 2) throw new ArgumentOutOfRangeException(nameof(historySize));
         _historySize = historySize;
         _thresholdMult = thresholdMult;
         _refractorySeconds = refractorySeconds;
+
+        // Defaults scale with the detector's frame window: a 20-frame onset
+        // window already provides a 20-event confidence window; warm-up at ¼
+        // of the window (min 3) keeps first events from being classified as
+        // outliers before a distribution exists.
+        var confCap = confidenceCapacity ?? historySize;
+        var confMin = confidenceMinHistory ?? Math.Max(3, historySize / 4);
+        _confidence = new PercentileConfidence(confCap, confMin, WarmupConfidence);
     }
 
     public void Reset()
@@ -30,6 +43,7 @@ public sealed class OnsetDetector : IEventDetector
         _prevMags = Array.Empty<float>();
         _prevFlux = 0f;
         _lastOnsetSeconds = double.NegativeInfinity;
+        _confidence.Reset();
     }
 
     public IEnumerable<AudioEvent> Process(SpectralFrame frame)
@@ -51,7 +65,7 @@ public sealed class OnsetDetector : IEventDetector
         }
         Array.Copy(mags, _prevMags, mags.Length);
 
-        // Warm-up: наполняем историю, ничего не детектируем.
+        // Warm-up: fill history, do not detect.
         if (_fluxHistory.Count < _historySize)
         {
             _fluxHistory.Enqueue(flux);
@@ -59,7 +73,7 @@ public sealed class OnsetDetector : IEventDetector
             yield break;
         }
 
-        // Статистика по ПРОШЛЫМ кадрам (без текущего).
+        // Statistics over PAST frames (excluding current).
         double mean = 0;
         foreach (var f in _fluxHistory) mean += f;
         mean /= _fluxHistory.Count;
@@ -73,7 +87,6 @@ public sealed class OnsetDetector : IEventDetector
         var refractoryElapsed = frame.TimestampSeconds - _lastOnsetSeconds >= _refractorySeconds;
         var isRisingEdge = flux > threshold && flux > _prevFlux && refractoryElapsed;
 
-        // Обновляем историю ПОСЛЕ проверки.
         _fluxHistory.Enqueue(flux);
         while (_fluxHistory.Count > _historySize) _fluxHistory.Dequeue();
         _prevFlux = flux;
@@ -81,7 +94,14 @@ public sealed class OnsetDetector : IEventDetector
         if (isRisingEdge)
         {
             _lastOnsetSeconds = frame.TimestampSeconds;
-            var conf = Math.Clamp((flux - threshold) / (threshold + 1e-6f), 0f, 1f);
+
+            // Percentile-based confidence among recent *events*.
+            // Estimate BEFORE Observe so the current event doesn't bias
+            // its own rank. Warm-up (<MinHistory events) returns 0.5 —
+            // honest about lacking data, instead of the old variance-based
+            // formula that saturated to 1.0 on quiet material (KI-1).
+            var conf = _confidence.Estimate(flux);
+            _confidence.Observe(flux);
 
             yield return new AudioEvent
             {
