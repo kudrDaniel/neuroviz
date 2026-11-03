@@ -14,7 +14,10 @@ public static class ControlKinds
 
 public static class IpcConstants
 {
-    public const int ProtocolVersion = 1;
+    // Bumped 1→2 in B2: added EventStreamFrame.ContinuousParams ([Key(4)]).
+    // Wire-compatible at MessagePack level (unknown keys are ignored both
+    // directions), but semantically the protocol gained a new channel.
+    public const int ProtocolVersion = 2;
     public const string ControlPipeName = "NeuroViz.Control";
     public const string EventStreamPipeName = "NeuroViz.EventStream";
     public const string AudioClockMapName = "NeuroViz.AudioClock";

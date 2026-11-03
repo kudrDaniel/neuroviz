@@ -30,4 +30,35 @@ public class IpcRoundTripTests
         Assert.Equal(1f, back.Params["pulse"].EvaluateAt(3.0), 3);
         Assert.True(back.Params["pulse"].EvaluateAt(3.5) < 0.5f);
     }
+
+    [Fact]
+    public void EventStreamFrame_WithContinuousParams_RoundTrip()
+    {
+        var frame = new EventStreamFrame
+        {
+            AudioClockSeconds = 1.5,
+            FrameSeq = 7,
+            ContinuousParams =
+        {
+            ["spectral_centroid"] = 0.42f,
+            ["harmonicity"] = 0.85f,
+        },
+        };
+        var bytes = MessagePack.MessagePackSerializer.Serialize(frame, MessagePackOptions.Default);
+        var back = MessagePack.MessagePackSerializer.Deserialize<EventStreamFrame>(bytes, MessagePackOptions.Default);
+        Assert.Equal(0.42f, back.ContinuousParams["spectral_centroid"]);
+        Assert.Equal(0.85f, back.ContinuousParams["harmonicity"]);
+    }
+
+    [Fact]
+    public void EventStreamFrame_NoContinuousParams_DefaultsToEmpty()
+    {
+        // Simulates a v1 frame (from an old inspector) being read by v2 code:
+        // ContinuousParams key is absent, must default to empty, not null.
+        var legacy = new EventStreamFrame { AudioClockSeconds = 1.0, FrameSeq = 1 };
+        var bytes = MessagePack.MessagePackSerializer.Serialize(legacy, MessagePackOptions.Default);
+        var back = MessagePack.MessagePackSerializer.Deserialize<EventStreamFrame>(bytes, MessagePackOptions.Default);
+        Assert.NotNull(back.ContinuousParams);
+        Assert.Empty(back.ContinuousParams);
+    }
 }

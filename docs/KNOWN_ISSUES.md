@@ -51,28 +51,51 @@ B1b/B1c.
    плотном материале для каждого детектора.
 
 **Прогресс:**
-- ✅ **B1a**: `OnsetDetector` → `PercentileConfidence`. `confidence` =
-  mid-rank перцентиль `flux` среди последних N onset-событий. Warm-up
-  (`< confidenceMinHistory`) → `0.5`. Регрессионный тест
-  `QuietMaterial_ConfidenceDistributedNotSaturated`.
+- ✅ **B1a**: `OnsetDetector` → `PercentileConfidence`.
 - ✅ **B1b**: `NoveltyDetector`, `PitchDetector`, `AzimuthDetector` →
   `PercentileConfidence`.
-  - Novelty: перцентиль `normalizedError`. Warm-up 3 события (≈4.5s).
-  - Pitch: перцентиль `maxHps`. Убран `maxHps/(maxHps+10)` — не
-    насыщается на пианино.
-  - Azimuth: перцентиль `|ildNorm|` (семантика сменилась с
-    «абсолютная панорама» на «необычность панорамы», `basic.json`
-    не затронут — правило использует `param_from_event`).
-  - Регрессионные тесты `Confidence_Distributed_NotSaturated` в
-    каждом из трёх файлов.
-- ⏳ **B1c**: `SpectralFeaturesDetector` (убрать hardcoded
-  `Confidence = 1f`); финальный проход по `TUNING.md`.
+- ✅ **B1c (variant B, в рамках B2)**: `SpectralFeaturesDetector`
+  переведён из `IEventDetector` в `IContinuousDetector`. Захардкоженный
+  `Confidence = 1f` устранён вместе с событиями — `spectral_centroid`
+  и `harmonicity` теперь continuous-метрики (`ContinuousParams`).
+  `Confidence` для них больше не существует — правила фильтруют
+  напрямую по `params.<metric>` (или, для встроенной визуализации,
+  `MainNode` читает значения из `ContinuousParams`).
 
-**Заблокировано на:** — блокер снят, `AnalyzerPipeline` выносит всю
-тяжёлую работу из аудио-колбэка на отдельный поток.
+**Статус KI-1:** закрыт (все 5 детекторов переведены).
 
-**Обходной путь:** — не требуется для onset/novelty/pitch/azimuth.
-Остаётся один hardcoded-`Confidence = 1f` в `SpectralFeaturesDetector`;
-до B1c правила, фильтрующие по `confidence` на `spectral_centroid` /
-`harmonicity`, всё ещё будут проходить всегда. В `basic.json` таких
-правил нет (обе используют `param_from_event`).
+**Обходной путь:** не требуется.
+
+---
+
+### KI-2: Continuous params не сохраняются в `.nvproj`
+
+**Симптом.** После Load project (MVP-A1) и Play в replay-режиме
+`ContinuousParams` в `EventStreamFrame` пуст. Визуализатор держит
+последние значения из live-сессии — визуал «замораживается» на
+индикаторах (`spectral_centroid`, `harmonicity`), которые в live
+двигались.
+
+**Корневая причина.** `ContinuousParams` вычисляются в реальном
+времени из PCM; в `EventTimeline` (`.nvproj`) они не сохраняются.
+Схема `EventTimeline` не имеет поля под continuous-историю.
+
+**Не однострочный фикс.** Требуется:
+1. Расширить `EventTimeline` — `List<ContinuousSample>` или
+   `Dictionary<string, List<(double t, float v)>>`.
+2. Инкремент `EventTimeline.SchemaVersion` (1→2) и
+   `ProjectDocument.ProjectVersion` (1→2) + миграция.
+3. `SaveProjectAsync` пишет живую историю; `LoadProjectAsync`
+   восстанавливает.
+4. `MainNode` в replay ищет непрерывные значения по timestamp,
+   а не только latest.
+
+**Заблокировано на:** B3/B4 (band_energy, offset) — сначала нужно
+определить окончательный набор continuous-ключей. Сохранять схему
+под 2 ключа, чтобы через неделю переделывать под 3 полосы
+band_energy — расточительно.
+
+**Обходной путь до закрытия.** В replay визуал работает от событий
+(pulse, shiver, pan, pitch). Continuous-индикаторы заморожены на
+последних значениях — визуально это «застывший фон», не баг
+логики.

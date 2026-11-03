@@ -97,6 +97,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public AppSettings Settings { get; }
 
+    private static readonly IReadOnlyDictionary<string, float> EmptyContinuousParams
+    = new Dictionary<string, float>();
+
     public MainWindowViewModel()
     {
         Settings = AppSettings.Load();
@@ -170,10 +173,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         List<AudioEvent> eventsToSend;
         double currentPos;
 
+        IReadOnlyDictionary<string, float> continuousParams;
         if (_isLiveAnalysis && _pipeline != null)
         {
             currentPos = _pipeline.LastAnalyzedTimestamp;
             var batch = _pipeline.Sink.DrainAll();
+            // NEW: fresh continuous values from this tick's STFT frames.
+            continuousParams = _pipeline.Sink.DrainContinuous();
             eventsToSend = new List<AudioEvent>(batch.Count);
 
             foreach (var analyzed in batch)
@@ -193,6 +199,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 .Where(r => r.Timestamp > windowStart && r.Timestamp <= currentPos)
                 .Select(r => r.Source)
                 .ToList();
+            // Replay mode: no analysis pipeline → no continuous values.
+            // Visualizer holds last live values (see KNOWN_ISSUES.md).
+            continuousParams = EmptyContinuousParams;
         }
 
         // Приоритеты: внутри одного события — побеждает высший приоритет
@@ -215,7 +224,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         }
 
-        _ipcServer.PushFrame(currentPos, eventsToSend, paramValues);
+        _ipcServer.PushFrame(currentPos, eventsToSend, paramValues, continuousParams);
         _lastTickPosition = currentPos;
     }
 
@@ -226,7 +235,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
         pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
         pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
-        pipeline.AddDetector(new SpectralFeaturesDetector(refractorySeconds: 0.05));
+        pipeline.AddDetector(new SpectralFeaturesDetector()); // continuous
         return pipeline;
     }
 
@@ -437,7 +446,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 ["channels"]   = _player.Channels.ToString(),
                 // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
                 // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
-                ["detectors"]  = "onset,novelty,pitch,azimuth,spectral_features",
+                ["detectors"] = "onset,novelty,pitch,azimuth | continuous: spectral_features",
             },
             };
 

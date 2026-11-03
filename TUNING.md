@@ -91,6 +91,39 @@
 
 ---
 
+## Уровень 1.5. Continuous params (B2)
+
+Помимо дискретных событий, пайплайн эмитит **непрерывные метрики** —
+по одному `float` на ключ за STFT-кадр (~40 Гц). Они попадают в
+`EventStreamFrame.ContinuousParams` и используются визуализатором
+**напрямую** (без `EvaluateAt`, без decay, без истории).
+
+**Отличие от events:** events имеют `Confidence` и затухают через
+`ParamValue.EvaluateAt`; continuous — просто последнее известное
+значение метрики. Если метрика перестала приходить (silence или
+replay), визуализатор держит последнее значение.
+
+### Доступные continuous-ключи
+
+| Ключ | Диапазон | Источник | Смысл |
+|---|---|---|---|
+| `spectral_centroid` | 0..1 | `SpectralFeaturesDetector` | Яркость спектра (высокие частоты → 1) |
+| `harmonicity` | 0..1 | `SpectralFeaturesDetector` | 1 = чистый тон, 0 = шум |
+
+### Использование в Godot
+
+`MainNode._Process` читает `frame.ContinuousParams` и использует
+значения напрямую:
+
+```csharp
+if (frame.ContinuousParams.TryGetValue("spectral_centroid", out var c))
+    _contCentroid = c;
+// ...
+var contScale = 0.3f + _smoothCentroid * 2.5f;
+_contRect.Scale = new Vector2(contScale, contScale);
+
+---
+
 ## Уровень 2. Правила (JSON)
 Файл `samples/rules/basic.json`. Связывают события со «свойствами» (параметрами) визуализатора.
 

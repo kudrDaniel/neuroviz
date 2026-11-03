@@ -8,6 +8,15 @@ public sealed class EventStreamFrame
 {
     [Key(0)] public double AudioClockSeconds { get; init; }
     [Key(1)] public List<AudioEvent> Events { get; init; } = new();
+
+    /// <summary>Event-driven params with decay (<see cref="ParamValue.EvaluateAt"/>).</summary>
     [Key(2)] public Dictionary<string, ParamValue> Params { get; init; } = new();
+
     [Key(3)] public long FrameSeq { get; init; }
+
+    /// <summary>
+    /// Continuous per-frame metrics (e.g. band_energy, spectral_centroid).
+    /// Latest value only, no decay, no history. Empty in replay mode.
+    /// </summary>
+    [Key(4)] public Dictionary<string, float> ContinuousParams { get; init; } = new();
 }

@@ -78,36 +78,6 @@
       ]
     },
     {
-      "id": "harmonicity-shape",
-      "priority": 70,
-      "when": {
-        "event": "harmonicity"
-      },
-      "actions": [
-        {
-          "type": "set",
-          "param": "shape_smooth",
-          "param_from_event": "harmonicity",
-          "decayMs": 300
-        }
-      ]
-    },
-    {
-      "id": "centroid-rotation",
-      "priority": 60,
-      "when": {
-        "event": "spectral_centroid"
-      },
-      "actions": [
-        {
-          "type": "set",
-          "param": "brightness",
-          "param_from_event": "centroid_norm",
-          "decayMs": 300
-        }
-      ]
-    },
-    {
       "id": "stream-open",
       "priority": 50,
       "when": {

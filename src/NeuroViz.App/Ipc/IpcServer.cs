@@ -71,9 +71,12 @@ public sealed class IpcServer : IDisposable
         _ = Task.Run(AcceptEventStreamAsync);
     }
 
-    public void PushFrame(double audioClockSeconds, IReadOnlyList<AudioEvent> events, Dictionary<string, ParamValue> paramValues)
+    public void PushFrame(
+    double audioClockSeconds,
+    IReadOnlyList<AudioEvent> events,
+    Dictionary<string, ParamValue> paramValues,
+    IReadOnlyDictionary<string, float> continuousParams)
     {
-        // Визуализатор не подключён — фрейм бесполезен, не копим.
         if (!_eventStreamConnected) return;
 
         var frame = new EventStreamFrame
@@ -81,10 +84,13 @@ public sealed class IpcServer : IDisposable
             AudioClockSeconds = audioClockSeconds,
             Events = events.ToList(),
             Params = paramValues,
-            FrameSeq = Interlocked.Increment(ref _seq)
+            FrameSeq = Interlocked.Increment(ref _seq),
+            // Clone: caller's dict is reused across ticks in replay (empty static).
+            ContinuousParams = continuousParams.Count > 0
+                ? new Dictionary<string, float>(continuousParams)
+                : new(),
         };
 
-        // Bounded + DropOldest: при переполнении вытесняется самый старый кадр.
         _outgoingFrames.Writer.TryWrite(frame);
     }
 

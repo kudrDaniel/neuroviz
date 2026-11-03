@@ -18,7 +18,8 @@ public sealed class AnalyzerPipeline : IDisposable
     private const int QueueCapacity = 8;
 
     private readonly StftBuffer _stft;
-    private readonly List<IEventDetector> _detectors = new();
+    private readonly List<IEventDetector> _eventDetectors = new();
+    private readonly List<IContinuousDetector> _continuousDetectors = new();
     private readonly EventSink _sink;
     private readonly Channel<PcmFrame> _queue;
     private readonly CancellationTokenSource _cts = new();
@@ -28,6 +29,8 @@ public sealed class AnalyzerPipeline : IDisposable
 
     private SpectralFrame? _lastSpectralFrame;
     private double _lastAnalyzedTimestamp;
+
+    public EventSink Sink => _sink;
 
     public AnalyzerPipeline(int sampleRate, int channels, int fftSize = 2048, int hopSize = 1024, EventSink? sink = null)
     {
@@ -47,11 +50,10 @@ public sealed class AnalyzerPipeline : IDisposable
 
     /// <summary>Позиция последнего обработанного кадра. Читается из UI-потока.</summary>
     public double LastAnalyzedTimestamp => Volatile.Read(ref _lastAnalyzedTimestamp);
-
-    public EventSink Sink => _sink;
     public long DetectorErrors => Interlocked.Read(ref _detectorErrors);
 
-    public void AddDetector(IEventDetector detector) => _detectors.Add(detector);
+    public void AddDetector(IEventDetector detector) => _eventDetectors.Add(detector);
+    public void AddDetector(IContinuousDetector detector) => _continuousDetectors.Add(detector);
 
     public void Attach(IAudioPlayer player)
     {
@@ -69,7 +71,8 @@ public sealed class AnalyzerPipeline : IDisposable
 
     public void Reset()
     {
-        foreach (var d in _detectors) d.Reset();
+        foreach (var d in _eventDetectors) d.Reset();
+        foreach (var d in _continuousDetectors) d.Reset();
     }
 
     // ───────────────────────── AUDIO THREAD ─────────────────────────
@@ -93,7 +96,7 @@ public sealed class AnalyzerPipeline : IDisposable
                     Volatile.Write(ref _lastAnalyzedTimestamp, frame.PositionSeconds);
 
                     // 1. Сначала сырым звуком — тех, кому он нужен (Binaural/Azimuth).
-                    foreach (var detector in _detectors)
+                    foreach (var detector in _eventDetectors)
                     {
                         if (detector is IPcmEventDetector pcmDetector)
                         {
@@ -122,17 +125,20 @@ public sealed class AnalyzerPipeline : IDisposable
     {
         _lastSpectralFrame = frame;
 
-        foreach (var detector in _detectors)
+        foreach (var detector in _eventDetectors)
         {
             try
             {
                 foreach (var ev in detector.Process(frame))
                     _sink.Emit(ev, frame);
             }
-            catch
-            {
-                Interlocked.Increment(ref _detectorErrors);
-            }
+            catch { Interlocked.Increment(ref _detectorErrors); }
+        }
+
+        foreach (var detector in _continuousDetectors)
+        {
+            try { detector.ProcessContinuous(frame, _sink); }
+            catch { Interlocked.Increment(ref _detectorErrors); }
         }
     }
 
