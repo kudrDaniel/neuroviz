@@ -448,7 +448,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 ["channels"]   = _player.Channels.ToString(),
                 // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
                 // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
-                ["detectors"] = "onset,offset,novelty,pitch,azimuth | continuous: spectral_features",
+                ["detectors"] = "onset,offset,novelty,pitch,azimuth | continuous: spectral_features,band_energy",
             },
             };
 
