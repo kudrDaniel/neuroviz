@@ -116,6 +116,26 @@
           "decayMs": 1500
         }
       ]
+    },
+    {
+      "id": "stream-close",
+      "priority": 45,
+      "when": {
+        "event": "stream_boundary",
+        "filters": {
+          "params.open": {
+            "eq": "0"
+          }
+        }
+      },
+      "actions": [
+        {
+          "type": "set",
+          "param": "stream_fade",
+          "value": 0.8,
+          "decayMs": 2000
+        }
+      ]
     }
   ]
 }

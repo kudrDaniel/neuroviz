@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using NeuroViz.Analysis.Detectors;
 using NeuroViz.Audio;
+using NeuroViz.Core.Events;
 
 namespace NeuroViz.Analysis;
 
@@ -20,6 +21,7 @@ public sealed class AnalyzerPipeline : IDisposable
     private readonly StftBuffer _stft;
     private readonly List<IEventDetector> _eventDetectors = new();
     private readonly List<IContinuousDetector> _continuousDetectors = new();
+    private readonly List<IEventObserver> _observers = new();
     private readonly EventSink _sink;
     private readonly Channel<PcmFrame> _queue;
     private readonly CancellationTokenSource _cts = new();
@@ -54,6 +56,7 @@ public sealed class AnalyzerPipeline : IDisposable
 
     public void AddDetector(IEventDetector detector) => _eventDetectors.Add(detector);
     public void AddDetector(IContinuousDetector detector) => _continuousDetectors.Add(detector);
+    public void AddObserver(IEventObserver observer) => _observers.Add(observer);
 
     public void Attach(IAudioPlayer player)
     {
@@ -73,6 +76,10 @@ public sealed class AnalyzerPipeline : IDisposable
     {
         foreach (var d in _eventDetectors) d.Reset();
         foreach (var d in _continuousDetectors) d.Reset();
+        // Observers that also implement IEventDetector / IContinuousDetector
+        // were reset via the loops above. Pure observers would need IResettable;
+        // none exist yet. StreamBoundaryDetector is the only observer today,
+        // and it's an IEventDetector — covered by the first loop.
     }
 
     // ───────────────────────── AUDIO THREAD ─────────────────────────
@@ -130,7 +137,10 @@ public sealed class AnalyzerPipeline : IDisposable
             try
             {
                 foreach (var ev in detector.Process(frame))
+                {
                     _sink.Emit(ev, frame);
+                    EmitObservedDerivatives(ev, frame);
+                }
             }
             catch { Interlocked.Increment(ref _detectorErrors); }
         }
@@ -138,6 +148,20 @@ public sealed class AnalyzerPipeline : IDisposable
         foreach (var detector in _continuousDetectors)
         {
             try { detector.ProcessContinuous(frame, _sink); }
+            catch { Interlocked.Increment(ref _detectorErrors); }
+        }
+    }
+
+    private void EmitObservedDerivatives(AudioEvent ev, SpectralFrame frame)
+    {
+        if (_observers.Count == 0) return;
+        foreach (var observer in _observers)
+        {
+            try
+            {
+                foreach (var derived in observer.OnEventEmitted(ev))
+                    _sink.Emit(derived, frame);
+            }
             catch { Interlocked.Increment(ref _detectorErrors); }
         }
     }

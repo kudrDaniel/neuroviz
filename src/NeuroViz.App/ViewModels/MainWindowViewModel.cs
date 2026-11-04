@@ -236,8 +236,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         pipeline.AddDetector(new NoveltyDetector(alpha: 0.01f, historySize: 50, thresholdMult: 2.5f, refractorySeconds: 1.5, minVolume: 0.5f));
         pipeline.AddDetector(new PitchDetector(refractorySeconds: 0.05));
         pipeline.AddDetector(new AzimuthDetector(refractorySeconds: 0.05));
-        pipeline.AddDetector(new SpectralFeaturesDetector()); // continuous
-        pipeline.AddDetector(new BandEnergyDetector());              // continuous — B3
+
+        var boundary = new StreamBoundaryDetector();   // C2: dual role
+        pipeline.AddDetector(boundary);
+        pipeline.AddObserver(boundary);
+
+        // Continuous metrics — B2/B3/C1.
+        pipeline.AddDetector(new SpectralFeaturesDetector());
+        pipeline.AddDetector(new BandEnergyDetector());
         pipeline.AddDetector(new VadDetector());
         return pipeline;
     }
@@ -449,7 +455,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 ["channels"]   = _player.Channels.ToString(),
                 // Перечисляем то, что LoadFileAsync реально добавляет в pipeline.
                 // При изменении набора детекторов — править ЗДЕСЬ и в LoadFileAsync.
-                ["detectors"] = "onset,offset,novelty,pitch,azimuth | " +
+                ["detectors"] = "onset,offset,novelty,pitch,azimuth,stream_boundary | " +
                 "continuous: spectral_features,band_energy,vad",
             },
             };

@@ -214,6 +214,53 @@ ratio → 0.0.
 не phase info, а именно crossings — обнуляется на DC и нарастает
 к высоким частотам / шуму.
 
+### Stream Boundary: `stream_boundary` (C2)
+
+Sticky-состояние «открыта ли глава». Эмитит событие `stream_boundary`
+с `params.open = 1` (глава началась) или `= 0` (глава закончилась).
+Правила `stream-open` / `stream-close` в `basic.json` реагируют на
+`params.open` через `eq: "1"` / `eq: "0"`.
+
+**Двойная роль:** `StreamBoundaryDetector` реализует и
+`IEventDetector` (проверка таймаута на каждом фрейме), и
+`IEventObserver` (приём novelty-событий). Регистрируется дважды на
+одном pipeline — как детектор и как observer.
+
+**Правила:**
+
+| Что | Значение по умолчанию | Смысл |
+|---|---|---|
+| Strong novelty | `confidence ≥ 0.75` **или** `error_magnitude ≥ 4.0` | Сигнал «смена секции» |
+| Open window | 4 с | Два strong-novelty в этом окне → open |
+| Open count | 2 | Один novelty = drum fill, не секция |
+| Close timeout | 8 с | 8 с без strong-novelty → close |
+| Refractory | 2 с | Между open-событиями — пауза |
+
+**Почему 2 novelty:** один громкий барабанный филл — не смена
+секции. Два strong-novelty в течение 4 с — уже структурное событие
+(куплет → припев, смена динамики, смена инструментовки).
+
+**Почему refresh, а не re-emit:** пока стрим открыт, strong-novelty
+обновляет `lastStrongNovelty` — таймаут close отодвигается. Новый
+open не эмитится (правило `stream-open` не должно срабатывать на
+каждой смене аккорда внутри секции). Это sticky state: одно событие
+на границу, а не на каждое изменение.
+
+**Тюнинг:**
+- Если на спокойных треках стрим «закрывается» слишком быстро —
+  увеличьте `closeAfterSeconds` (12–15 с).
+- Если на шумных треках открывается слишком часто — поднимите
+  `strongConfidence` к 0.85 или `openRequiredCount` к 3.
+- Для полностью предсказуемого поведения на размеченных треках —
+  `refractorySeconds: 5` (границы реже, чем раз в 5 с).
+
+**Отличие от continuous:** `stream_boundary` — **событие**, не
+continuous. Оно сохраняется в `.nvproj` (это `AudioEvent`), доступно
+в Debug-таблице, и его можно фильтровать правилами. Sticky-состояние
+самого детектора (`_isOpen`) — runtime-only, не переживает load;
+см. `docs/KNOWN_ISSUES.md` (KI-2-родственный нюанс, отдельно не
+фиксируется т.к. событие-граница в timeline есть).
+
 ---
 
 ## Уровень 2. Правила (JSON)
