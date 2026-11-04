@@ -5,34 +5,33 @@ using NeuroViz.Visualizer.Scripts;
 public partial class MainNode : Node2D
 {
     private IpcClient _ipc = null!;
-    private ColorRect _rect = null!;        // main visual: events + band_energy
-    private ColorRect _contRect = null!;    // B2 acceptance demo: centroid + harmonicity
+    private ColorRect _rect = null!;        // music layer (events + band_energy + flux)
+    private ColorRect _vocalRect = null!;   // voice layer (C4, continuous only)
+    private ColorRect _contRect = null!;    // B2 acceptance demo
     private Label _statusLabel = null!;
 
-    // Event-driven params (decay via EvaluateAt)
+    // ── Event params ────────────────────────────────────────────────
     private ParamValue? _pulseParam;
     private ParamValue? _shiverParam;
     private ParamValue? _panParam;
     private ParamValue? _pitchParam;
     private ParamValue? _releaseParam;
+    private ParamValue? _streamGlowParam;
+    private ParamValue? _streamFadeParam;
 
-    // Continuous: B2 (spectral features)
-    private float _contHarmonicity;
-    private float _contCentroid;
-    private float _smoothHarmonicity;
-    private float _smoothCentroid;
+    // ── Continuous: B2 (spectral features) ──────────────────────────
+    private float _contHarmonicity, _contCentroid;
+    private float _smoothHarmonicity, _smoothCentroid;
 
-    // Continuous: B3 (band energy)
-    private float _contLow;
-    private float _contMid;
-    private float _contHigh;
-    private float _smoothLow;
-    private float _smoothMid;
-    private float _smoothHigh;
+    // ── Continuous: B3 (band energy) ────────────────────────────────
+    private float _contLow, _contMid, _contHigh;
+    private float _smoothLow, _smoothMid, _smoothHigh;
 
-    // Continuous: C3 (spectral flux)
-    private float _contFlux;
-    private float _smoothFlux;
+    // ── Continuous: C3 (spectral flux) ──────────────────────────────
+    private float _contFlux, _smoothFlux;
+
+    // ── Continuous: C1 (VAD) ────────────────────────────────────────
+    private float _contSpeechMusicRatio, _smoothSpeechMusicRatio;
 
     private double _lastClock = 0.0;
 
@@ -47,13 +46,24 @@ public partial class MainNode : Node2D
         };
         AddChild(_rect);
 
-        // B2 acceptance demo — kept from B2 to prove continuous path still
-        // works alongside the new band_energy channels below.
+        // Voice layer: starts fully transparent (ratio = 0 at startup,
+        // so vocal alpha = 0). Alpha cross-faded by speech_music_ratio.
+        _vocalRect = new ColorRect
+        {
+            Color = new Color(0.3f, 1.0f, 0.5f, 0f),
+            Size = new Vector2(80, 80),
+            Position = new Vector2(400, 160),
+            PivotOffset = new Vector2(40, 40),
+        };
+        AddChild(_vocalRect);
+
+        // B2 acceptance demo — unchanged, docs that the continuous path
+        // works alongside the new two-layer scene.
         _contRect = new ColorRect
         {
             Color = new Color(1.0f, 0.5f, 0.2f, 0.7f),
             Size = new Vector2(60, 60),
-            Position = new Vector2(500, 400),
+            Position = new Vector2(650, 400),
             PivotOffset = new Vector2(30, 30),
         };
         AddChild(_contRect);
@@ -79,29 +89,35 @@ public partial class MainNode : Node2D
         {
             _lastClock = frame.AudioClockSeconds;
 
-            // ── Event params ─────────────────────────────────────────
+            // Event params
             if (frame.Params.TryGetValue("pulse", out var p)) _pulseParam = p;
             if (frame.Params.TryGetValue("shiver", out var s)) _shiverParam = s;
             if (frame.Params.TryGetValue("pan_x", out var pan)) _panParam = pan;
             if (frame.Params.TryGetValue("pitch_height", out var pitch)) _pitchParam = pitch;
             if (frame.Params.TryGetValue("release", out var rel)) _releaseParam = rel;
+            if (frame.Params.TryGetValue("stream_glow", out var glow)) _streamGlowParam = glow;
+            if (frame.Params.TryGetValue("stream_fade", out var fade)) _streamFadeParam = fade;
 
-            // ── Continuous params (B2) ───────────────────────────────
+            // Continuous: B2
             if (frame.ContinuousParams.TryGetValue("harmonicity", out var h)) _contHarmonicity = h;
             if (frame.ContinuousParams.TryGetValue("spectral_centroid", out var c)) _contCentroid = c;
 
-            // ── Continuous params (B3) ───────────────────────────────
+            // Continuous: B3
             if (frame.ContinuousParams.TryGetValue("band_energy.low", out var bl)) _contLow = bl;
             if (frame.ContinuousParams.TryGetValue("band_energy.mid", out var bm)) _contMid = bm;
             if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh)) _contHigh = bh;
 
+            // Continuous: C3
             if (frame.ContinuousParams.TryGetValue("spectral_flux", out var f)) _contFlux = f;
+
+            // Continuous: C1
+            if (frame.ContinuousParams.TryGetValue("speech_music_ratio", out var r)) _contSpeechMusicRatio = r;
 
             bool mmapOk = _ipc.GetAudioClockSeconds() != null;
             _statusLabel.Text =
                 $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | " +
                 $"Params: {frame.Params.Count} | Cont: {frame.ContinuousParams.Count} | " +
-                $"Flux: {_smoothFlux:F2} | " +
+                $"Flux: {_smoothFlux:F2} | Ratio: {_smoothSpeechMusicRatio:F2} | " +
                 $"mmap: {(mmapOk ? "ok" : "off")}";
         }
 
@@ -113,37 +129,37 @@ public partial class MainNode : Node2D
         float currentPan = _panParam?.EvaluateAt(nowClock) ?? 0f;
         float currentPitch = _pitchParam?.EvaluateAt(nowClock) ?? 0f;
         float currentRelease = _releaseParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentGlow = _streamGlowParam?.EvaluateAt(nowClock) ?? 0f;
+        float currentFade = _streamFadeParam?.EvaluateAt(nowClock) ?? 0f;
 
         // ── Smoothing ────────────────────────────────────────────────
-        // k  = τ ≈ 40 ms — event params (snappy pop).
-        // kc = τ ≈ 67 ms — spectral features (B2).
-        // kb = τ ≈ 83 ms — band energy (B3). Slightly slower so per-frame
-        //   jitter doesn't fight the "breathing"; still fast enough to track
-        //   a kick (~200-500 ms period) without visible lag.
-        float k = 1f - Mathf.Exp(-25f * (float)delta);
-        float kc = 1f - Mathf.Exp(-15f * (float)delta);
-        float kb = 1f - Mathf.Exp(-12f * (float)delta);
-        // kf = τ ≈ 33 ms — spectral flux. Fast enough to flash on attacks
-        // (typical attack duration 10-50 ms), slow enough not to flicker on
-        // 40 Hz frame-rate jitter.
-        float kf = 1f - Mathf.Exp(-30f * (float)delta);
-        _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
+        float k = 1f - Mathf.Exp(-25f * (float)delta);  // events (~40 ms)
+        float kc = 1f - Mathf.Exp(-15f * (float)delta);  // spectral (~67 ms)
+        float kb = 1f - Mathf.Exp(-12f * (float)delta);  // band_energy (~83 ms)
+        float kf = 1f - Mathf.Exp(-30f * (float)delta);  // flux (~33 ms)
+        // Ratio is already EMA-smoothed in VadDetector (τ ≈ 2 s); kc on
+        // top just removes residual per-tick jitter without adding lag.
+        float kr = kc;
 
         _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kc);
         _smoothCentroid = Mathf.Lerp(_smoothCentroid, _contCentroid, kc);
         _smoothLow = Mathf.Lerp(_smoothLow, _contLow, kb);
         _smoothMid = Mathf.Lerp(_smoothMid, _contMid, kb);
         _smoothHigh = Mathf.Lerp(_smoothHigh, _contHigh, kb);
+        _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
+        _smoothSpeechMusicRatio = Mathf.Lerp(
+            _smoothSpeechMusicRatio, _contSpeechMusicRatio, kr);
 
-        // ── Main rect: events + band_energy ──────────────────────────
-        // Pan (event) → horizontal position.
+        // Global brightness modifier from spectral_flux (C3) — shared by
+        // both layers so the whole scene flashes on attacks.
+        float fluxBrightness = 0.7f + Mathf.Min(0.3f, _smoothFlux * 1.5f);
+
+        // ── Music layer (_rect) ──────────────────────────────────────
         var targetX = 150f + currentPan * 200f;
         _rect.Position = new Vector2(
             Mathf.Lerp(_rect.Position.X, targetX, k),
             _rect.Position.Y);
 
-        // Scale = base (1.0) + onset blow-up + offset release + band_energy.low
-        // breathing. Clipped at 0.3 to keep pulse+release combinations sane.
         var targetScale = Mathf.Max(0.3f,
             1.0f
             + currentPulse * 0.5f
@@ -151,41 +167,50 @@ public partial class MainNode : Node2D
             + _smoothLow * 0.4f);
         _rect.Scale = _rect.Scale.Lerp(new Vector2(targetScale, targetScale), k);
 
-        // Rotation from harmonicity (B2 continuous, kept for character).
         _rect.Rotation = Mathf.Lerp(_rect.Rotation, _smoothHarmonicity * 0.785f, k);
 
-        // Color pipeline (B5 roadmap: three channels from three bands;
-        // C3 adds spectral_flux as a global brightness multiplier on top):
-        //   band_energy.mid  → hue shift (blue → teal)
-        //   band_energy.high → brightness (towards white)
-        //   spectral_flux    → global luminance (flash on attack, dim on sustain)
-        //   pitch / shiver   → event-driven accents layered on top
-        var targetColor = new Color(0.2f, 0.6f, 1.0f);
-        targetColor = targetColor.Lerp(new Color(0.4f, 1.0f, 0.7f), _smoothMid * 0.4f);
-        targetColor = targetColor.Lerp(Colors.White, _smoothHigh * 0.5f);
-        targetColor = targetColor.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);
-        targetColor = targetColor.Lerp(Colors.Orange, currentShiver);
+        var musicColor = new Color(0.2f, 0.6f, 1.0f);                              // base blue
+        musicColor = musicColor.Lerp(new Color(0.4f, 1.0f, 0.7f), _smoothMid * 0.4f); // mid → teal
+        musicColor = musicColor.Lerp(Colors.White, _smoothHigh * 0.5f);            // high → white
+        musicColor = musicColor.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);   // pitch → light blue
+        musicColor = musicColor.Lerp(Colors.Orange, currentShiver);                // shiver → orange
+        musicColor = musicColor.Lerp(Colors.White, currentGlow * 0.6f);            // stream_glow
+        musicColor = musicColor.Lerp(new Color(0.3f, 0.3f, 0.3f), currentFade * 0.5f); // stream_fade
+        musicColor = new Color(
+            musicColor.R * fluxBrightness,
+            musicColor.G * fluxBrightness,
+            musicColor.B * fluxBrightness);
 
-        // Global brightness: baseline 0.7, boosted by up to 0.3 on strong flux.
-        // The 1.5× gain makes small fluxes (0.02-0.05 on steady material) just
-        // perceptible, and saturates at flux=0.2 — beyond that, "very busy"
-        // and "extremely busy" look the same, which is fine for a flash effect.
-        float fluxBoost = Mathf.Min(0.3f, _smoothFlux * 1.5f);
-        float fluxBrightness = 0.7f + fluxBoost;
-        targetColor = new Color(
-            targetColor.R,
-            targetColor.G,
-            targetColor.B,
-            targetColor.A);
-        targetColor = new Color(
-            targetColor.R * fluxBrightness,
-            targetColor.G * fluxBrightness,
-            targetColor.B * fluxBrightness,
-            targetColor.A);
+        _rect.Color = _rect.Color.Lerp(musicColor, k);
 
-        _rect.Color = _rect.Color.Lerp(targetColor, k);
+        // ── Voice layer (_vocalRect) — continuous only ───────────────
+        // No pulse / release / pan: voice does not pulse on a kick drum.
+        var vocalScale = 0.6f + _smoothCentroid * 1.2f;
+        _vocalRect.Scale = _vocalRect.Scale.Lerp(new Vector2(vocalScale, vocalScale), kc);
+        _vocalRect.Rotation = Mathf.Lerp(_vocalRect.Rotation, _smoothHarmonicity * 0.5f, kc);
 
-        // ── Continuous demo rect (B2 acceptance, unchanged) ─────────
+        var vocalColor = new Color(0.3f, 1.0f, 0.5f);                              // base green
+        vocalColor = vocalColor.Lerp(new Color(0.5f, 1.0f, 0.3f), _smoothMid * 0.3f); // slight hue shift
+        vocalColor = vocalColor.Lerp(Colors.White, _smoothHigh * 0.4f);
+        vocalColor = vocalColor.Lerp(Colors.White, currentGlow * 0.6f);
+        vocalColor = vocalColor.Lerp(new Color(0.3f, 0.3f, 0.3f), currentFade * 0.5f);
+        vocalColor = new Color(
+            vocalColor.R * fluxBrightness,
+            vocalColor.G * fluxBrightness,
+            vocalColor.B * fluxBrightness);
+
+        _vocalRect.Color = _vocalRect.Color.Lerp(vocalColor, kc);
+
+        // ── Cross-fade alpha ─────────────────────────────────────────
+        // Applied AFTER the color Lerp, otherwise target alpha=1 would
+        // pull the rectangle back to opaque each frame.
+        float vocalAlpha = Mathf.Clamp(_smoothSpeechMusicRatio, 0f, 1f);
+        float musicAlpha = 1f - vocalAlpha;
+
+        _rect.Color = new Color(_rect.Color.R, _rect.Color.G, _rect.Color.B, musicAlpha);
+        _vocalRect.Color = new Color(_vocalRect.Color.R, _vocalRect.Color.G, _vocalRect.Color.B, vocalAlpha);
+
+        // ── B2 acceptance demo (unchanged) ───────────────────────────
         var contScale = 0.3f + _smoothCentroid * 2.5f;
         _contRect.Scale = new Vector2(contScale, contScale);
         _contRect.Color = new Color(1.0f, 0.5f, 0.2f, 0.7f)

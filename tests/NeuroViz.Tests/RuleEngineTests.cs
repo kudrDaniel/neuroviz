@@ -52,4 +52,36 @@ public class RuleEngineTests
         Assert.Equal("high", actions[0].RuleId);
         Assert.Equal("low", actions[1].RuleId);
     }
+
+    [Fact]
+    public void StreamBoundary_Open_TriggersStreamGlow()
+    {
+        var engine = MakeEngine();
+        var ev = new AudioEvent
+        {
+            Type = EventTypes.StreamBoundary,
+            TimestampSeconds = 10,
+            Params = new Dictionary<string, float> { ["open"] = 1f },
+        };
+        var actions = engine.Process(ev, 10).ToList();
+
+        Assert.Contains(actions, a => a.Param == "stream_glow");
+        Assert.DoesNotContain(actions, a => a.Param == "stream_fade");
+    }
+
+    [Fact]
+    public void StreamBoundary_Close_TriggersStreamFade()
+    {
+        var engine = MakeEngine();
+        var ev = new AudioEvent
+        {
+            Type = EventTypes.StreamBoundary,
+            TimestampSeconds = 20,
+            Params = new Dictionary<string, float> { ["open"] = 0f },
+        };
+        var actions = engine.Process(ev, 20).ToList();
+
+        Assert.Contains(actions, a => a.Param == "stream_fade");
+        Assert.DoesNotContain(actions, a => a.Param == "stream_glow");
+    }
 }

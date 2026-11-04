@@ -331,6 +331,58 @@ continuous. Оно сохраняется в `.nvproj` (это `AudioEvent`), д
   `scale = max(0.3, 1.0 + pulse*0.5 - release*0.35)`. Пульс раздувает,
   release сжимает — «вдох/выдох» в такт. Если хотите более резкий
   выдох — увеличьте `0.35f`; для «намёка» — уменьшите до `0.2f`.
+* **`stream_glow`** (от `stream_boundary` с `open=1`): Кратковременная
+  белая вспышка (`Color.Lerp` к white, `currentGlow * 0.6f`). Применяется
+  к **обоим** слоям — открытие главы затрагивает всю сцену. `decayMs`
+  в `basic.json` = 1500 — вспышка ~1.5 секунды.
+* **`stream_fade`** (от `stream_boundary` с `open=0`): Плавный сдвиг к
+  серому (`Color.Lerp` к `(0.3, 0.3, 0.3)`, `currentFade * 0.5f`).
+  `decayMs` = 2000 — «выдох» длиннее, чем вспышка открытия.
 
 ### Затухание
 Параметры в Godot вычисляются через `ParamValue.EvaluateAt(clock)`, который экспоненциально затухает на основе `decayMs` из JSON. Визуал всегда плавный, независимо от частоты кадров.
+
+### Два слоя: музыка и голос (C4)
+
+С C4 сцена состоит из **двух ColorRect** с alpha cross-fade по
+`speech_music_ratio` (VAD, C1):
+
+| Слой | Позиция | Размер | Base color | Управление |
+|---|---|---|---|---|
+| Музыка (`_rect`) | (150, 150) | 100×100 | синий `(0.2, 0.6, 1.0)` | events (pulse/release/pan/pitch/shiver/glow/fade) + band_energy + flux |
+| Голос (`_vocalRect`) | (400, 160) | 80×80 | зелёный `(0.3, 1.0, 0.5)` | continuous только (centroid/harmonicity/mid/high/flux/glow/fade) |
+
+**Cross-fade (в конце `_Process`):**
+
+```csharp
+float vocalAlpha = _smoothSpeechMusicRatio;  // [0..1]
+float musicAlpha = 1f - vocalAlpha;
+_rect.Color = new Color(_rect.Color.R, _rect.Color.G, _rect.Color.B, musicAlpha);
+_vocalRect.Color = new Color(_vocalRect.Color.R, _vocalRect.Color.G, _vocalRect.Color.B, vocalAlpha);
+```
+
+- `ratio = 0` (инструментал) → музыка alpha=1, голос alpha=0 (невидим).
+- `ratio = 1` (чистый вокал) → наоборот.
+- `ratio = 0.5` (смешанная секция) → оба видны пополам.
+
+Плавность ~2s из VAD (EMA) + kc (~67 ms) в MainNode.
+
+**Почему `_vocalRect` не реагирует на pulse/release/pan:**
+удар или панорама — характеристики **музыкального** слоя. Голос не
+пульсирует на бочку. В вокальной секции событийные удары всё равно
+видны: `musicAlpha > 0` до `ratio = 1` (полное исчезновение музыки).
+Реалистично: голос редко бывает полностью без инструментала.
+
+**Почему общий `fluxBrightness`:** `spectral_flux` — глобальная скорость
+спектральных изменений, применяется к обоим слоям. Это делает «вспышку
+на атаке» универсальной — независимо от того, музыкальная секция или
+вокальная.
+
+**`stream_glow` / `stream_fade` — на обоих слоях:** открытие/закрытие
+главы — структурное событие трека, оно должно ощущаться всей сценой,
+а не только одним слоем.
+
+**`_contRect` (650, 400)** — B2 acceptance demo, не часть основного
+визуала. Документирует continuous pipeline (centroid→scale,
+harmonicity→color). Может быть удалён после подтверждения acceptance
+на практике.
