@@ -103,6 +103,19 @@ public sealed class StftBuffer
             _im[i] = 0f;
         }
 
+        // ZCR from raw ring buffer (before window). Count sign changes
+        // between consecutive samples. Denominator (_fftSize - 1): number of
+        // adjacent pairs, not number of samples — otherwise pure Nyquist
+        // signal reports 1.0 instead of 0.5.
+        int crossings = 0;
+        for (int i = 1; i < _fftSize; i++)
+        {
+            var prev = _ring[(_writePos - _fftSize + i - 1) & _mask];
+            var curr = _ring[(_writePos - _fftSize + i) & _mask];
+            if ((prev >= 0f) != (curr >= 0f)) crossings++;
+        }
+        var zcr = (float)crossings / (_fftSize - 1);
+
         _fft.Direct(_re, _im);
 
         for (int i = 0; i < _mags.Length; i++)
@@ -115,6 +128,7 @@ public sealed class StftBuffer
             SampleRate = _sampleRate,
             FftSize = _fftSize,
             Sequence = _frameSeq++,
+            ZeroCrossingRate = zcr,
         };
     }
 }
