@@ -35,7 +35,8 @@ namespace NeuroViz.Analysis.Detectors;
 /// loaded project doesn't drive MainNode visuals from boundary until
 /// C4 rewires it.</para>
 /// </summary>
-public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
+public sealed class StreamBoundaryDetector
+    : IEventDetector, IEventObserver, ISeekAwareDetector
 {
     private readonly double _openWindowSeconds;
     private readonly int _openRequiredCount;
@@ -43,19 +44,22 @@ public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
     private readonly double _refractorySeconds;
     private readonly float _strongConfidence;
     private readonly float _strongMagnitude;
+    private readonly double _maxOpenSeconds;
 
     private readonly Queue<double> _recentStrongTimestamps = new();
     private bool _isOpen;
     private double _lastStrongNoveltySeconds = double.NegativeInfinity;
     private double _lastBoundarySeconds = double.NegativeInfinity;
+    private double _openStartedSeconds = double.NegativeInfinity;
 
     public StreamBoundaryDetector(
         double openWindowSeconds = 4.0,
         int openRequiredCount = 2,
-        double closeAfterSeconds = 8.0,
+        double closeAfterSeconds = 5.0,
         double refractorySeconds = 2.0,
         float strongConfidence = 0.75f,
-        float strongMagnitude = 4.0f)
+        float strongMagnitude = 4.0f,
+        double maxOpenSeconds = 30.0)
     {
         if (openRequiredCount < 1)
             throw new ArgumentOutOfRangeException(nameof(openRequiredCount));
@@ -68,6 +72,7 @@ public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
         _refractorySeconds = refractorySeconds;
         _strongConfidence = strongConfidence;
         _strongMagnitude = strongMagnitude;
+        _maxOpenSeconds = maxOpenSeconds;
     }
 
     public void Reset()
@@ -76,12 +81,26 @@ public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
         _isOpen = false;
         _lastStrongNoveltySeconds = double.NegativeInfinity;
         _lastBoundarySeconds = double.NegativeInfinity;
+        _openStartedSeconds = double.NegativeInfinity;
     }
 
     // ── IEventDetector: per-frame timeout close ─────────────────────
     public IEnumerable<AudioEvent> Process(SpectralFrame frame)
     {
         if (!_isOpen) yield break;
+
+        // Force close: a chapter that has been open too long is no longer
+        // useful as a chapter marker — close it and let the next two strong
+        // novelties open a fresh one. Without this, dense tracks never close.
+        if (frame.TimestampSeconds - _openStartedSeconds >= _maxOpenSeconds)
+        {
+            _isOpen = false;
+            _recentStrongTimestamps.Clear();
+            _lastBoundarySeconds = frame.TimestampSeconds;
+            yield return BoundaryEvent(frame.TimestampSeconds, open: false);
+            yield break;
+        }
+
         if (frame.TimestampSeconds - _lastStrongNoveltySeconds < _closeAfterSeconds)
             yield break;
 
@@ -121,6 +140,7 @@ public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
         if (ev.TimestampSeconds - _lastBoundarySeconds < _refractorySeconds) yield break;
 
         _isOpen = true;
+        _openStartedSeconds = ev.TimestampSeconds;
         _lastBoundarySeconds = ev.TimestampSeconds;
         _recentStrongTimestamps.Clear();
         yield return BoundaryEvent(ev.TimestampSeconds, open: true);
@@ -141,4 +161,20 @@ public sealed class StreamBoundaryDetector : IEventDetector, IEventObserver
             ["open"] = open ? 1f : 0f,
         },
     };
+
+    public void OnSeek(double oldPos, double newPos)
+    {
+        // Not open: nothing to preserve.
+        if (!_isOpen) return;
+
+        // Adjust all timestamps by the seek delta, so close-timer still
+        // measures wall-clock elapsed since last strong novelty in track time.
+        var delta = newPos - oldPos;
+        _lastStrongNoveltySeconds += delta;
+        _lastBoundarySeconds += delta;
+        _openStartedSeconds += delta;
+
+        // Transient per-position queue: stale, clear it.
+        _recentStrongTimestamps.Clear();
+    }
 }

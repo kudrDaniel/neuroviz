@@ -429,7 +429,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         // Импортированный уже в replay, трогать pipeline нет смысла.
         if (_projectSource == ProjectSource.Live)
         {
-            _pipeline?.Reset();
+            var oldPos = Position;
+            _pipeline?.ResetForSeek(oldPos, seconds);
             SwitchToReplay();
         }
     }

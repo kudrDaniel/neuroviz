@@ -149,6 +149,44 @@ public class StreamBoundaryDetectorTests
         Assert.Single(opened);
     }
 
+    [Fact]
+    public void ForceClose_AfterMaxOpenSeconds()
+    {
+        var det = new StreamBoundaryDetector(
+            closeAfterSeconds: 5.0, maxOpenSeconds: 10.0);
+        det.OnEventEmitted(Novelty(1.0, 0.9f)).ToList();
+        det.OnEventEmitted(Novelty(2.0, 0.9f)).ToList();    // open at t=2
+
+        // Continuous refreshes keep natural close from firing.
+        for (double t = 4.0; t <= 10.0; t += 2.0)
+            det.OnEventEmitted(Novelty(t, 0.9f)).ToList();
+
+        // At t=12: 10s since open (t=2). Force close.
+        var closed = det.Process(Frame(12.5)).ToList();
+        Assert.Single(closed);
+        Assert.Equal(0f, closed[0].Params["open"]);
+    }
+
+    [Fact]
+    public void OnSeek_PreservesOpenState_AdjustsTimers()
+    {
+        var det = new StreamBoundaryDetector(closeAfterSeconds: 5.0);
+        det.OnEventEmitted(Novelty(10.0, 0.9f)).ToList();
+        det.OnEventEmitted(Novelty(11.0, 0.9f)).ToList();   // open at t=11
+        det.Process(Frame(12.0)).ToList();                   // no close (1s)
+
+        // Seek from 12 to 42 (delta +30).
+        det.OnSeek(12.0, 42.0);
+
+        // Frame at 43 → 2s since lastStrong (was 11+30=41) → no close.
+        Assert.Empty(det.Process(Frame(43.0)));
+
+        // Frame at 47 → 6s since lastStrong → close.
+        var closed = det.Process(Frame(47.0)).ToList();
+        Assert.Single(closed);
+        Assert.Equal(0f, closed[0].Params["open"]);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────
 
     private static AudioEvent Novelty(double t, float confidence, float magnitude = 0f)

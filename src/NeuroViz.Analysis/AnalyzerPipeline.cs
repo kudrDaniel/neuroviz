@@ -166,6 +166,18 @@ public sealed class AnalyzerPipeline : IDisposable
         }
     }
 
+    public void ResetForSeek(double oldPositionSeconds, double newPositionSeconds)
+    {
+        foreach (var d in _eventDetectors)
+        {
+            if (d is ISeekAwareDetector s)
+                s.OnSeek(oldPositionSeconds, newPositionSeconds);
+            else
+                d.Reset();
+        }
+        foreach (var d in _continuousDetectors) d.Reset();
+    }
+
     public void Dispose()
     {
         Detach();
