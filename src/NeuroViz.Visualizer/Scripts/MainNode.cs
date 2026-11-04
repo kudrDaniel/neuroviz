@@ -30,6 +30,10 @@ public partial class MainNode : Node2D
     private float _smoothMid;
     private float _smoothHigh;
 
+    // Continuous: C3 (spectral flux)
+    private float _contFlux;
+    private float _smoothFlux;
+
     private double _lastClock = 0.0;
 
     public override void _Ready()
@@ -91,10 +95,13 @@ public partial class MainNode : Node2D
             if (frame.ContinuousParams.TryGetValue("band_energy.mid", out var bm)) _contMid = bm;
             if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh)) _contHigh = bh;
 
+            if (frame.ContinuousParams.TryGetValue("spectral_flux", out var f)) _contFlux = f;
+
             bool mmapOk = _ipc.GetAudioClockSeconds() != null;
             _statusLabel.Text =
                 $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | " +
                 $"Params: {frame.Params.Count} | Cont: {frame.ContinuousParams.Count} | " +
+                $"Flux: {_smoothFlux:F2} | " +
                 $"mmap: {(mmapOk ? "ok" : "off")}";
         }
 
@@ -116,6 +123,11 @@ public partial class MainNode : Node2D
         float k = 1f - Mathf.Exp(-25f * (float)delta);
         float kc = 1f - Mathf.Exp(-15f * (float)delta);
         float kb = 1f - Mathf.Exp(-12f * (float)delta);
+        // kf = τ ≈ 33 ms — spectral flux. Fast enough to flash on attacks
+        // (typical attack duration 10-50 ms), slow enough not to flicker on
+        // 40 Hz frame-rate jitter.
+        float kf = 1f - Mathf.Exp(-30f * (float)delta);
+        _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
 
         _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kc);
         _smoothCentroid = Mathf.Lerp(_smoothCentroid, _contCentroid, kc);
@@ -142,15 +154,35 @@ public partial class MainNode : Node2D
         // Rotation from harmonicity (B2 continuous, kept for character).
         _rect.Rotation = Mathf.Lerp(_rect.Rotation, _smoothHarmonicity * 0.785f, k);
 
-        // Color pipeline (B5 roadmap: three channels from three bands):
+        // Color pipeline (B5 roadmap: three channels from three bands;
+        // C3 adds spectral_flux as a global brightness multiplier on top):
         //   band_energy.mid  → hue shift (blue → teal)
         //   band_energy.high → brightness (towards white)
+        //   spectral_flux    → global luminance (flash on attack, dim on sustain)
         //   pitch / shiver   → event-driven accents layered on top
-        var targetColor = new Color(0.2f, 0.6f, 1.0f);                                  // base blue
-        targetColor = targetColor.Lerp(new Color(0.4f, 1.0f, 0.7f), _smoothMid * 0.4f); // mid → teal
-        targetColor = targetColor.Lerp(Colors.White, _smoothHigh * 0.5f);                // high → white
-        targetColor = targetColor.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);       // pitch → light blue
-        targetColor = targetColor.Lerp(Colors.Orange, currentShiver);                    // shiver → orange
+        var targetColor = new Color(0.2f, 0.6f, 1.0f);
+        targetColor = targetColor.Lerp(new Color(0.4f, 1.0f, 0.7f), _smoothMid * 0.4f);
+        targetColor = targetColor.Lerp(Colors.White, _smoothHigh * 0.5f);
+        targetColor = targetColor.Lerp(new Color(0.8f, 0.9f, 1.0f), currentPitch);
+        targetColor = targetColor.Lerp(Colors.Orange, currentShiver);
+
+        // Global brightness: baseline 0.7, boosted by up to 0.3 on strong flux.
+        // The 1.5× gain makes small fluxes (0.02-0.05 on steady material) just
+        // perceptible, and saturates at flux=0.2 — beyond that, "very busy"
+        // and "extremely busy" look the same, which is fine for a flash effect.
+        float fluxBoost = Mathf.Min(0.3f, _smoothFlux * 1.5f);
+        float fluxBrightness = 0.7f + fluxBoost;
+        targetColor = new Color(
+            targetColor.R,
+            targetColor.G,
+            targetColor.B,
+            targetColor.A);
+        targetColor = new Color(
+            targetColor.R * fluxBrightness,
+            targetColor.G * fluxBrightness,
+            targetColor.B * fluxBrightness,
+            targetColor.A);
+
         _rect.Color = _rect.Color.Lerp(targetColor, k);
 
         // ── Continuous demo rect (B2 acceptance, unchanged) ─────────

@@ -127,15 +127,16 @@
 значение метрики. Если метрика перестала приходить (silence или
 replay), визуализатор держит последнее значение.
 
-### Доступные continuous-ключи
-
 | Ключ | Диапазон | Источник | Смысл |
 |---|---|---|---|
-| `spectral_centroid` | 0..1 | `SpectralFeaturesDetector` | Яркость спектра (высокие частоты → 1) |
+| `spectral_centroid` | 0..1 | `SpectralFeaturesDetector` | Яркость спектра |
 | `harmonicity` | 0..1 | `SpectralFeaturesDetector` | 1 = чистый тон, 0 = шум |
-| `band_energy.low` | 0..1 | `BandEnergyDetector` | Доля энергии 20–250 Гц (бас, бочка) |
-| `band_energy.mid` | 0..1 | `BandEnergyDetector` | Доля энергии 250–2000 Гц (мелодия, вокал) |
-| `band_energy.high` | 0..1 | `BandEnergyDetector` | Доля энергии 2000–8000 Гц (hi-hats, воздух) |
+| `band_energy.low` | 0..1 | `BandEnergyDetector` | Доля энергии 20–250 Гц |
+| `band_energy.mid` | 0..1 | `BandEnergyDetector` | Доля энергии 250–2000 Гц |
+| `band_energy.high` | 0..1 | `BandEnergyDetector` | Доля энергии 2000–8000 Гц |
+| `vad_state` | 0 / 1 | `VadDetector` | Речь в фрейме |
+| `speech_music_ratio` | 0..1 | `VadDetector` | EMA vad_state, τ ≈ 2 s |
+| `spectral_flux` | 0..1 | `SpectralFluxDetector` | Скорость спектральных изменений (rising flux / total mag) |
 
 **Свойства `band_energy` (B3):**
 - Три полосы **не перекрываются** → `low + mid + high = 1.0` при ненулевой энергии.
@@ -213,6 +214,43 @@ ratio → 0.0.
 `StftBuffer.ProcessFrame` по сырому ring-buffer (до Hann-окна). Это
 не phase info, а именно crossings — обнуляется на DC и нарастает
 к высоким частотам / шуму.
+
+### Spectral Flux (C3)
+
+`SpectralFluxDetector` эмитит **относительный** flux:
+flux = Σ max(0, mags[i] − prevMags[i]) / Σ mags[i]
+
+- **0** — спектр не меняется (сустейн, стабильная нота).
+- **~0.5** — спектр «переворачивается» (затухание старой ноты + атака новой).
+- **1.0** — переход из тишины в звук.
+
+**Почему относительный, не сырой:** сырой `Σ max(0, diff)` зависит от
+громкости. На тихом треке flux мал, на громком — велик, при одинаковой
+**скорости изменений**. Визуалу нужно «насколько резкая атака», а не
+«насколько громкая» — это относительная характеристика. Громкость уже
+передаётся через `band_energy`.
+
+**В MainNode:** `spectral_flux` умножает **всю яркость** итогового
+цвета:
+
+```csharp
+float fluxBoost = Mathf.Min(0.3f, _smoothFlux * 1.5f);
+float fluxBrightness = 0.7f + fluxBoost;  // [0.7 .. 1.0]
+targetColor *= fluxBrightness;
+```
+
+**Эффект**: _rect вспыхивает на атаках (flux → 1) и тускнеет в
+сустейне (flux → 0). Отличается от pulse/release (они дёргают
+масштаб) — flux дёргает яркость.
+
+**Сглаживание**: kf = 1 - exp(-30*delta) (τ ≈ 33 мс). Быстрее
+kc/kb (67/83 мс) — нужна отзывчивость к атакам, но медленнее
+event k (40 мс) — чтобы 40 Hz шум не мигал на экране.
+
+OnsetDetector не использует этот детектор. У него своя копия
+формулы (Σ max(0, diff) без нормировки) — она нужна для threshold
+логики. Дублирование намеренное: детекторы изолированы друг от друга,
+порядок регистрации в pipeline не критичен.
 
 ### Stream Boundary: `stream_boundary` (C2)
 
