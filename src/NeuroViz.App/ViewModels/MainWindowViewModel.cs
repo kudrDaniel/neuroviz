@@ -285,14 +285,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (CurrentFilePath is null) return;
 
-        // Возврат в live — только для «живого» проекта и только с начала.
-        // Импортированный проект всегда играет из памяти.
-        if (_projectSource == ProjectSource.Live
-            && !_isLiveAnalysis
-            && _player.Position < 0.1)
-        {
+        // Defensive: re-attach at current position if any path detached the
+        // pipeline while still in Live mode. Was gated on _player.Position
+        // < 0.1, which meant a mid-track Play after detach silently stayed
+        // in replay forever. With the SeekTo fix nothing detaches in Live,
+        // so this is currently a no-op — kept for safety.
+        if (_projectSource == ProjectSource.Live && !_isLiveAnalysis)
             SwitchToLive();
-        }
 
         _player.Play();
         IsPlaying = true;
@@ -454,19 +453,22 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public void SeekTo(double seconds)
     {
         if (CurrentFilePath is null) return;
+        var oldPos = Position;
         _player.Seek(seconds);
         Position = seconds;
         SliderPosition = seconds;
         _lastTickPosition = seconds;
 
-        // Reset + SwitchToReplay нужны только для «живого» проекта.
-        // Импортированный уже в replay, трогать pipeline нет смысла.
+        // Stay live across seek. Previously SwitchToReplay() detached the
+        // analyzer, and Play only re-attached when position < 0.1 — so any
+        // seek past the first 100 ms permanently killed live analysis for
+        // the rest of the session. ResetForSeek preserves seek-aware state
+        // (StreamBoundaryDetector) and resets frame-history detectors;
+        // StftBuffer stamps events with absolute playback position, so
+        // re-analysis produces correctly-timed events. _eventKeys dedupes
+        // re-detection of already-analyzed regions.
         if (_projectSource == ProjectSource.Live)
-        {
-            var oldPos = Position;
             _pipeline?.ResetForSeek(oldPos, seconds);
-            SwitchToReplay();
-        }
     }
 
     public async Task SaveProjectAsync(string targetPath)
