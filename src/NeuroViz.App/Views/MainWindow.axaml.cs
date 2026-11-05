@@ -79,6 +79,24 @@ public partial class MainWindow : Window
             e.Handled = true;
     }
 
+    private async void OnSettingsClicked(object? sender, RoutedEventArgs e)
+    {
+        var oldRulesPath = ViewModel.Settings.RulesPath;
+        var dialog = new SettingsWindow(ViewModel.Settings);
+        var saved = await dialog.ShowDialog<bool>(this);
+        if (!saved) return;
+
+        if (!string.Equals(ViewModel.Settings.RulesPath, oldRulesPath, StringComparison.Ordinal))
+        {
+            ViewModel.StatusText =
+                "Settings saved. Rules path changed — click Reload Rules to apply.";
+        }
+        else
+        {
+            ViewModel.StatusText = "Settings saved.";
+        }
+    }
+
     private async void OnLaunchVisualizerClicked(object? sender, RoutedEventArgs e)
     {
         var vm = ViewModel;

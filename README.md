@@ -60,12 +60,16 @@
 4.  Использование:
     *   **Open…** → выбрать аудиофайл.
     *   **Play** → проигрывание + live-анализ.
-    *   **Launch Visualizer** → при первом клике откроются два диалога:
-        путь к `Godot_v4.x-stable_mono_win64.exe` и папка с
+    *   **Launch Visualizer** → при первом запуске откроет диалоги поиска
+        Godot (`Godot_v4.x-stable_mono_win64.exe`) и папки с
         `project.godot` (`src/NeuroViz.Visualizer`). Пути сохраняются в
-        `%APPDATA%/NeuroViz/settings.json`, повторный клик запускает
-        Godot без диалогов. Переконфигурировать — удалить/изменить
-        `settings.json` либо удалить соответствующий путь из него.
+        `%APPDATA%/NeuroViz/settings.json`. Повторный клик запускает
+        Godot без диалогов.
+    *   **Settings…** → форма с тремя полями (Godot EXE, project folder,
+        rules JSON) вместо ручного редактирования `settings.json`.
+        Валидация при Save: файлы/папки должны существовать, JSON
+        правил должен парситься. Кнопка **Reset to defaults** обнуляет
+        все три поля (не сохраняя).
 
 ### ⌨️ Горячие клавиши
 
@@ -85,12 +89,8 @@
 
 ## 🎛 Настройка (Tuning)
 
-... файл `samples/rules/basic.json` копируется рядом с exe при сборке
-(`bin/Debug/net10.0/samples/rules/basic.json`). Для кастомных наборов
-правил — укажите путь в `%APPDATA%/NeuroViz/settings.json`:
-
-```json
-{ "rulesPath": "C:\\path\\to\\my-rules.json" }
+Для кастомных наборов правил — укажите путь через **Settings…** (или
+вручную в `%APPDATA%/NeuroViz/settings.json`):
 
 Подробное описание всех ползунков и настроек читайте в файле TUNING.md.
 
