@@ -316,6 +316,40 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _projectSource = ProjectSource.None;
     }
 
+    /// <summary>
+    /// Space bar: play if paused, pause if playing. Same preconditions as
+    /// <see cref="Play"/> / <see cref="Pause"/> — no file loaded → no-op.
+    /// </summary>
+    [RelayCommand]
+    private void TogglePlayPause()
+    {
+        if (_player.IsPlaying) Pause();
+        else Play();
+    }
+
+    [RelayCommand]
+    private void SeekForward() => SeekBy(+5.0);
+
+    [RelayCommand]
+    private void SeekBackward() => SeekBy(-5.0);
+
+    [RelayCommand]
+    private void SeekHome() => SeekTo(0.0);
+
+    private void SeekBy(double deltaSeconds)
+    {
+        if (CurrentFilePath is null) return;
+        SeekTo(ClampSeekTarget(Position, deltaSeconds, Duration));
+    }
+
+    /// <summary>
+    /// Clamps a seek target into [0, duration]. Extracted so the keyboard
+    /// handler (and any future transport control) can rely on bounded
+    /// behavior at file boundaries without duplicating the clamp.
+    /// </summary>
+    public static double ClampSeekTarget(double current, double delta, double duration)
+        => Math.Clamp(current + delta, 0.0, duration);
+
     [RelayCommand]
     public void LaunchVisualizer()
     {

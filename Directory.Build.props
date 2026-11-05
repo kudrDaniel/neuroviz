@@ -4,5 +4,6 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(OutputType)' != 'Library'">$(NETCoreSdkRuntimeIdentifier)</RuntimeIdentifier>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
 </Project>

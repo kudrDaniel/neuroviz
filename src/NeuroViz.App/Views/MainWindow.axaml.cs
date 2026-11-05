@@ -21,6 +21,62 @@ public partial class MainWindow : Window
 
         PositionSlider.AddHandler(Thumb.DragStartedEvent, OnSliderDragStarted, RoutingStrategies.Bubble);
         PositionSlider.AddHandler(Thumb.DragCompletedEvent, OnSliderDragCompleted, RoutingStrategies.Bubble);
+
+        // D1: keyboard shortcuts. Tunnel-phase handler runs before child
+        // controls — Slider would otherwise consume ←/→ for value adjustment,
+        // DataGrid would consume arrows/Home for cell navigation, Button would
+        // consume Space for activation. Tunnel + e.Handled = true pre-empts
+        // all three, matching standard media-player UX.
+        AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
+        // Button activates on Space KeyUp (ButtonBase: KeyDown sets IsPressed,
+        // KeyUp fires Click). Without swallowing KeyUp, a Button that still has
+        // focus from a prior mouse click re-fires on every Space — Play button
+        // resumes playback after Space paused it; Launch Visualizer opens a
+        // second Godot window.
+        AddHandler(KeyUpEvent, OnWindowKeyUp, RoutingStrategies.Tunnel);
+    }
+
+    private void OnWindowKeyDown(object? sender, KeyEventArgs e)
+    {
+        // Skip if typing in a text field — Space/arrows must work there.
+        if (e.Source is TextBox) return;
+
+        // Skip while dragging the position slider — a concurrent seek would
+        // fight the drag and feel broken.
+        var vm = ViewModel;
+        if (vm.IsDragging) return;
+
+        switch (e.Key)
+        {
+            case Key.Space:
+                vm.TogglePlayPauseCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case Key.Left:
+                vm.SeekBackwardCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case Key.Right:
+                vm.SeekForwardCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case Key.Home:
+                vm.SeekHomeCommand.Execute(null);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void OnWindowKeyUp(object? sender, KeyEventArgs e)
+    {
+        if (e.Source is TextBox) return;
+
+        // Swallow Space KeyUp unconditionally (no command) — Play/Pause already
+        // fired on KeyDown. Buttons activate on KeyUp; without this, focused
+        // buttons re-click on Space. Enter is intentionally NOT swallowed:
+        // keyboard activation of buttons via Tab+Enter keeps working.
+        if (e.Key == Key.Space)
+            e.Handled = true;
     }
 
     private async void OnLaunchVisualizerClicked(object? sender, RoutedEventArgs e)
@@ -184,7 +240,7 @@ public partial class MainWindow : Window
 
     private void OnSliderDragStarted(object? sender, VectorEventArgs e)
     {
-        // Сообщаем VM, что пользователь взял ползунок, 
+        // Сообщаем VM, что пользователь взял ползунок,
         // чтобы таймер перестал перезаписывать SliderPosition
         if (DataContext is MainWindowViewModel vm)
             vm.IsDragging = true;
