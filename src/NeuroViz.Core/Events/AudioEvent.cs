@@ -7,20 +7,23 @@ public sealed class AudioEvent
 {
     [Key(0)] public string Type { get; init; } = "";
     [Key(1)] public double TimestampSeconds { get; init; }
+    [Key(2)] public float Confidence { get; init; }
+    [Key(3)] public Dictionary<string, float> Params { get; init; } = new();
+    [Key(4)] public int SchemaVersion { get; init; } = 2;   // was 1 in v1 projects
+    [Key(5)] public int SourceLayer { get; init; }
+    [Key(6)] public int StreamId { get; init; } = -1;
 
     /// <summary>
-    /// Per-detector confidence in [0, 1]. Semantics: relative strength of
-    /// this event compared to recent events from the <b>same detector</b>
-    /// on the <b>same track</b>. NOT comparable across detectors or
-    /// tracks — a <c>confidence=0.8</c> onset on quiet piano does not
-    /// mean the same as <c>confidence=0.8</c> novelty on electronic music.
-    /// Filters that threshold on confidence must be tuned per-detector
-    /// (see TUNING.md).
+    /// 32-band downsampled magnitude snapshot at the event's timestamp.
+    /// Populated when the event is created from a live SpectralFrame
+    /// (<see cref="NeuroViz.App.ViewModels.EventRow.From"/>) or restored
+    /// from a v2 .nvproj. Empty array for v1 projects — see
+    /// EventRow.FromStored fallback to new float[32].
+    ///
+    /// <para><b>Wire-compatible:</b> old readers ignore Key(7); new
+    /// readers see missing key in v1 payloads and fall back to the
+    /// Array.Empty&lt;float&gt; initializer. No IpcConstants.ProtocolVersion
+    /// bump needed.</para>
     /// </summary>
-    [Key(2)] public float Confidence { get; init; }
-
-    [Key(3)] public Dictionary<string, float> Params { get; init; } = new();
-    [Key(4)] public int SchemaVersion { get; init; } = 1;
-    [Key(5)] public int SourceLayer { get; init; }      // 1 = базовый, 2 = комплексный
-    [Key(6)] public int StreamId { get; init; } = -1;    // для слоя 2: к какому потоку относится
+    [Key(7)] public float[] DownsampledSpectrum { get; init; } = Array.Empty<float>();
 }

@@ -462,13 +462,12 @@ public class ProjectLoaderTests
 ## 7. Открытые вопросы
 
 1. **Сохранять ли `DownsampledSpectrum` в `.nvproj`?**
-   - **Да:** debug-таблица видна и после load, 32 × 4 байта × N
-     событий = 128 × N байт. 10k событий ≈ 1.3 МБ. Приемлемо.
-   - **Нет:** проще схема, но после load debug-таблица показывает
-     нули (текущий план).
-   - **Решение:** отложить до MVP-D (Re-analyze button всё равно
-     заполнит спектры свежими). Схема `EventTimeline` остаётся
-     прежней; при желании добавляется в фазе 2.
+   - ✅ **Решено в D4 (schema v2):** Да. `AudioEvent.DownsampledSpectrum`
+     ([Key(7)] `float[]`, 32 bands, 128 байт/событие). v1 файлы читаются
+     (missing key → `Array.Empty<float>()` → `EventRow.FromStored`
+     fallback на `new float[32]`, debug-таблица показывает нули).
+     Re-analyze дозаполняет спектры для v1-проектов или после изменения
+     правил. 10k событий ≈ 1.3 МБ — приемлемо.
 
 2. **`CurrentProjectPath` в ViewModel?**
    - Сейчас `Save project…` всегда открывает диалог. После load

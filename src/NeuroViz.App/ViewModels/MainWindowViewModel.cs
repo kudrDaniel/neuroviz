@@ -28,6 +28,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     private AnalyzerPipeline? _pipeline;
     private bool _disposed;
     private bool _isLiveAnalysis = true;
+    private volatile bool _reanalyzeCancelRequested;
     private double _lastTickPosition = 0;
 
     private enum ProjectSource { None, Live, Imported }
@@ -43,8 +44,25 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string? CurrentFilePath
     {
         get => _currentFilePath;
-        set => SetProperty(ref _currentFilePath, value);
+        set
+        {
+            if (SetProperty(ref _currentFilePath, value))
+                OnPropertyChanged(nameof(CanReanalyze));
+        }
     }
+
+    private bool _isReanalyzing;
+    public bool IsReanalyzing
+    {
+        get => _isReanalyzing;
+        private set
+        {
+            if (SetProperty(ref _isReanalyzing, value))
+                OnPropertyChanged(nameof(CanReanalyze));
+        }
+    }
+
+    public bool CanReanalyze => _currentFilePath is not null && !_isReanalyzing;
 
     private double _duration;
     public double Duration
@@ -166,6 +184,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         if (_disposed) return;
 
+        // Re-analyze manages its own tick loop; don't race with it.
+        if (_isReanalyzing) return;
+
         if (!IsDragging)
         {
             Position = _player.Position;
@@ -260,6 +281,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     {
         try
         {
+            if (_isReanalyzing) { StatusText = "Re-analysis in progress — stop it first"; return; }
+
             StopPlayback();
             Events.Clear();
             _eventKeys.Clear();
@@ -295,6 +318,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Play()
     {
+        if (_isReanalyzing) return;
+
         if (CurrentFilePath is null) return;
 
         // Defensive: re-attach at current position if any path detached the
@@ -312,6 +337,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Pause()
     {
+        if (_isReanalyzing) return;
+
         _player.Pause();
         IsPlaying = false;
     }
@@ -319,6 +346,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Stop()
     {
+        if (_isReanalyzing) { _reanalyzeCancelRequested = true; return; }
+
         StopPlayback();
         Position = 0;
         SliderPosition = 0;
@@ -464,6 +493,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public void SeekTo(double seconds)
     {
+        if (_isReanalyzing) return;
         if (CurrentFilePath is null) return;
         var oldPos = Position;
         _player.Seek(seconds);
@@ -485,6 +515,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public async Task SaveProjectAsync(string targetPath)
     {
+        if (_isReanalyzing) { StatusText = "Cannot save during re-analysis"; return; }
+
         if (CurrentFilePath is null || _pipeline is null) return;
 
         try
@@ -531,6 +563,127 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    [RelayCommand]
+    private async Task ReanalyzeAsync()
+    {
+        if (_currentFilePath is null || _isReanalyzing) return;
+
+        IsReanalyzing = true;
+        _reanalyzeCancelRequested = false;
+
+        // Snapshot for restore-on-cancel.
+        var originalEvents = new List<EventRow>(Events);
+        var originalKeys = new HashSet<(string, long)>(_eventKeys);
+        var savedPos = Position;
+        var wasPlaying = _player.IsPlaying;
+
+        try
+        {
+            StopPlayback();
+            Events.Clear();
+            _eventKeys.Clear();
+
+            // Fresh pipeline: empty detector state, empty _eventKeys means
+            // no dedup-suppression against the previous run's events.
+            _pipeline?.Dispose();
+            _pipeline = CreateAnalyzerPipeline();
+            _pipeline.Attach(_player);
+
+            _player.Seek(0);
+            _player.Play();
+            IsPlaying = true;
+
+            var totalDuration = Duration;
+
+            while (true)
+            {
+                await Task.Delay(50);
+
+                // Disposed (window closing) — bail without restore.
+                if (_disposed || _lifetimeCts.IsCancellationRequested) return;
+
+                if (_reanalyzeCancelRequested)
+                {
+                    // Cancel = restore. Partial events discarded.
+                    Events.Clear();
+                    foreach (var r in originalEvents) Events.Add(r);
+                    _eventKeys.Clear();
+                    foreach (var k in originalKeys) _eventKeys.Add(k);
+
+                    _player.Pause();
+                    _pipeline.Detach();
+                    _player.Seek(savedPos);
+                    Position = savedPos;
+                    SliderPosition = savedPos;
+                    _lastTickPosition = savedPos;
+                    IsPlaying = false;
+
+                    StatusText = "Re-analysis cancelled — events restored";
+                    return;
+                }
+
+                if (_player.Position >= totalDuration - 0.1) break;
+
+                DrainSinkToEvents();
+                _pipeline.Sink.DrainContinuous();   // discard — re-analysis is not the live visual feed
+
+                var pct = (int)(100.0 * _player.Position / totalDuration);
+                StatusText = $"Re-analyzing… {pct}% ({Events.Count} events)";
+            }
+
+            _player.Pause();
+            DrainSinkToEvents();                    // final flush after playback end
+            _pipeline.Sink.DrainContinuous();
+
+            _player.Seek(savedPos);
+            _lastTickPosition = savedPos;
+            Position = savedPos;
+            SliderPosition = savedPos;
+
+            // Mode restoration: Live re-attaches; Imported stays detached
+            // (post-load replay is the whole point of Imported — but the
+            // user explicitly clicked Re-analyze, so we don't fight it).
+            if (_projectSource == ProjectSource.Live)
+            {
+                SwitchToLive();
+                if (wasPlaying) _player.Play();
+            }
+            else
+            {
+                _pipeline.Detach();
+                _isLiveAnalysis = false;
+                IsPlaying = false;
+            }
+
+            StatusText = $"Re-analysis complete: {Events.Count} events " +
+                         $"(schema v{ProjectDocument.CurrentVersion})";
+        }
+        catch (OperationCanceledException)
+        {
+            StatusText = "Re-analysis cancelled";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Re-analysis failed: {ex.Message}";
+        }
+        finally
+        {
+            _isReanalyzing = false;
+        }
+    }
+
+    private void DrainSinkToEvents()
+    {
+        if (_pipeline is null) return;
+        var batch = _pipeline.Sink.DrainAll();
+        foreach (var analyzed in batch)
+        {
+            var key = (analyzed.Event.Type, ToTickMs(analyzed.Event.TimestampSeconds));
+            if (_eventKeys.Add(key))
+                Events.Add(EventRow.From(analyzed));
+        }
+    }
+
     /// <summary>
     /// Загружает .nvproj: восстанавливает аудио, события, правила.
     /// Если аудио из проекта не резолвится — бросает <see cref="AudioNotFoundException"/>,
@@ -547,6 +700,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             var audioPath = overrideAudioPath ?? loaded.AudioPath;
             if (audioPath is null || !File.Exists(audioPath))
                 throw new AudioNotFoundException(loaded.Document.Timeline.AudioPath);
+
+            if (_isReanalyzing) { StatusText = "Re-analysis in progress — stop it first"; return; }
 
             // 1. Сброс текущего состояния.
             StopPlayback();

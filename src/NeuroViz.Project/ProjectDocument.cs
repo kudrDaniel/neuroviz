@@ -11,7 +11,7 @@ public sealed class ProjectDocument
     /// Максимальная версия схемы, которую понимает текущая сборка.
     /// Инкрементируется при любом несовместимом изменении полей ниже.
     /// </summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     [Key(0)] public int ProjectVersion { get; init; } = CurrentVersion;
     [Key(1)] public string Name { get; init; } = "";

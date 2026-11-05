@@ -17,23 +17,42 @@ public sealed class EventRow
     public string SpectrumString => string.Join(",",
         DownsampledSpectrum.Select(x => x.ToString("F2", CultureInfo.InvariantCulture)));
 
-    public static EventRow From(AnalyzedEvent analyzed) => new()
+    public static EventRow From(AnalyzedEvent analyzed)
     {
-        Timestamp = analyzed.Event.TimestampSeconds,
-        Type = analyzed.Event.Type,
-        Confidence = analyzed.Event.Confidence,
-        ParamsDisplay = FormatParams(analyzed.Event.Params),
-        Source = analyzed.Event,
-        DownsampledSpectrum = analyzed.Frame != null
+        // Always 32-long — real spectrum when a Frame is present, zeros
+        // otherwise. Keeps Source.DownsampledSpectrum and EventRow.DownsampledSpectrum
+        // in sync, and makes save path (Events.Select(r => r.Source)) naturally
+        // persist the spectrum without special-casing.
+        var spectrum = analyzed.Frame != null
             ? Downsample(analyzed.Frame.Magnitudes, 32)
-            : new float[32],
-    };
+            : new float[32];
 
-    /// <summary>
-    /// Событие, восстановленное из .nvproj: нет SpectralFrame (спектр
-    /// не сохраняется), DownsampledSpectrum — нули. Re-analyze (MVP-D)
-    /// заполнит его заново.
-    /// </summary>
+        // Source is a copy with DownsampledSpectrum populated. The original
+        // analyzed.Event has empty spectrum (live detectors don't attach frames
+        // to the AudioEvent they emit — that's the pipeline's job via the sink).
+        var source = new AudioEvent
+        {
+            Type = analyzed.Event.Type,
+            TimestampSeconds = analyzed.Event.TimestampSeconds,
+            Confidence = analyzed.Event.Confidence,
+            Params = analyzed.Event.Params,
+            SchemaVersion = analyzed.Event.SchemaVersion,
+            SourceLayer = analyzed.Event.SourceLayer,
+            StreamId = analyzed.Event.StreamId,
+            DownsampledSpectrum = spectrum,
+        };
+
+        return new EventRow
+        {
+            Timestamp = analyzed.Event.TimestampSeconds,
+            Type = analyzed.Event.Type,
+            Confidence = analyzed.Event.Confidence,
+            ParamsDisplay = FormatParams(analyzed.Event.Params),
+            Source = source,
+            DownsampledSpectrum = spectrum,
+        };
+    }
+
     public static EventRow FromStored(AudioEvent ev) => new()
     {
         Timestamp = ev.TimestampSeconds,
@@ -41,7 +60,12 @@ public sealed class EventRow
         Confidence = ev.Confidence,
         ParamsDisplay = FormatParams(ev.Params),
         Source = ev,
-        DownsampledSpectrum = new float[32],
+        // v1 projects have no Key(7) → ev.DownsampledSpectrum = Array.Empty<float>()
+        // → fallback to zeros (same visual as before D4). Re-analyze fills
+        // real spectrums and saves as v2.
+        DownsampledSpectrum = ev.DownsampledSpectrum.Length > 0
+            ? ev.DownsampledSpectrum
+            : new float[32],
     };
 
     private static string FormatParams(Dictionary<string, float> parameters)
