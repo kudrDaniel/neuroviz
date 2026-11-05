@@ -9,6 +9,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
 {
     private readonly AudioClockWriter? _clock;
     private int _handle;
+    private string? _loadedPath;
     private long _seq;
     private long _dspSampleCursor;   // сэмплов на канал, прошедших DSP
     private int _seekGeneration;    // ← новое: инвалидирует in-flight кадры при seek/stop/load
@@ -58,6 +59,8 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         _handle = Bass.CreateStream(path, 0, 0, flags);
         if (_handle == 0)
             throw new InvalidOperationException($"Bass.CreateStream failed: {Bass.LastError}");
+
+        _loadedPath = path;
 
         var info = Bass.ChannelGetInfo(_handle);
         SampleRate = info.Frequency;
@@ -118,6 +121,114 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
         _clock?.Update(seconds, IsPlaying ? ClockPlaybackState.Play : ClockPlaybackState.Pause);
     }
 
+    /// <summary>
+    /// Extracts a downsampled peak envelope for waveform visualization.
+    /// Returns <paramref name="bucketCount"/> values in [0, 1], where each
+    /// value is the maximum absolute sample magnitude across channels within
+    /// that time bucket.
+    ///
+    /// <para><b>Source of truth:</b> reads decoded PCM directly from BASS
+    /// (not from the analysis pipeline, not from <c>PcmAvailable</c>, not
+    /// from <c>.nvproj</c>). Waveform must reflect the actual audio file
+    /// even in Replay / Imported mode where the analyzer is detached.</para>
+    ///
+    /// <para><b>Decode-only handle:</b> BASS streams do not decode while
+    /// paused — <c>ChannelGetData</c> on the playback handle returns 0 bytes.
+    /// Open a second, decode-only handle against the same path
+    /// (<c>BassFlags.Decode | BassFlags.Float</c>): it decodes without
+    /// playing, so we can pull the whole file and discard. The playback
+    /// stream is not touched — position, DSP, and clock are unaffected.</para>
+    ///
+    /// <para><b>Cost:</b> O(frames) — one pass over the decoded stream. For
+    /// a 4-minute stereo track ~50–100 ms. Call from the UI thread after
+    /// Load (during which audio is paused); acceptable for MVP, one-shot
+    /// per file.</para>
+    /// </summary>
+    public float[] ExtractWaveformPeaks(int bucketCount)
+    {
+        ThrowIfDisposed();
+        if (bucketCount <= 0) throw new ArgumentOutOfRangeException(nameof(bucketCount));
+        if (_loadedPath is null) return new float[bucketCount];
+
+        // Decode-only handle: same file, no playback, ChannelGetData works
+        // in any state (the playback handle is untouched throughout).
+        var decodeHandle = Bass.CreateStream(
+            _loadedPath, 0, 0, BassFlags.Decode | BassFlags.Float);
+        if (decodeHandle == 0)
+        {
+            // Could not open (e.g. file deleted between Load and now). Return
+            // zeros rather than throwing — a waveform-less timeline is better
+            // than a hard failure on a non-critical feature.
+            return new float[bucketCount];
+        }
+
+        try
+        {
+            var totalFrames = (long)(Duration * SampleRate);
+            if (totalFrames <= 0)
+                return new float[bucketCount];
+
+            var framesPerBucket = Math.Max(1L, totalFrames / bucketCount);
+            var peaks = new float[bucketCount];
+
+            const int FramesPerRead = 4096;
+            var buffer = new float[FramesPerRead * Channels];
+
+            long frameCounter = 0;
+            int bucketIdx = 0;
+            float bucketPeak = 0f;
+            long nextBucketBoundary = framesPerBucket;
+
+            while (bucketIdx < bucketCount)
+            {
+                var bytesRead = Bass.ChannelGetData(
+                    decodeHandle, buffer, buffer.Length * sizeof(float));
+                if (bytesRead <= 0) break;
+
+                var floatsRead = bytesRead / sizeof(float);
+                var framesRead = floatsRead / Channels;
+                if (framesRead <= 0) break;
+
+                for (int f = 0; f < framesRead && bucketIdx < bucketCount; f++)
+                {
+                    float framePeak = 0f;
+                    for (int c = 0; c < Channels; c++)
+                    {
+                        var v = MathF.Abs(buffer[f * Channels + c]);
+                        if (v > framePeak) framePeak = v;
+                    }
+                    if (framePeak > bucketPeak) bucketPeak = framePeak;
+
+                    frameCounter++;
+                    if (frameCounter >= nextBucketBoundary)
+                    {
+                        peaks[bucketIdx] = bucketPeak;
+                        bucketIdx++;
+                        bucketPeak = 0f;
+                        nextBucketBoundary += framesPerBucket;
+                    }
+                }
+            }
+
+            // Tail: ultra-short files (totalFrames < bucketCount with
+            // framesPerBucket = 1) and read-truncation both leave a few
+            // trailing buckets. Repeat the last observed peak, not 0 —
+            // the right edge of the waveform should not show fake silence.
+            var tailValue = bucketIdx > 0 ? peaks[bucketIdx - 1] : 0f;
+            while (bucketIdx < bucketCount)
+            {
+                peaks[bucketIdx] = tailValue;
+                bucketIdx++;
+            }
+
+            return peaks;
+        }
+        finally
+        {
+            Bass.StreamFree(decodeHandle);
+        }
+    }
+
     private void OnDsp(int handle, int channel, IntPtr buffer, int length, IntPtr user)
     {
         if (length <= 0 || buffer == IntPtr.Zero) return;
@@ -167,6 +278,7 @@ public sealed class ManagedBassAudioPlayer : IAudioPlayer
             Bass.ChannelStop(_handle);
             Bass.StreamFree(_handle);
             _handle = 0;
+            _loadedPath = null;
         }
         _dsp = null;
     }

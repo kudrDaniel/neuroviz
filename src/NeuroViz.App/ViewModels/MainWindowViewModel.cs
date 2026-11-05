@@ -53,6 +53,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _duration, value);
     }
 
+    private float[]? _waveformPeaks;
+    public float[]? WaveformPeaks
+    {
+        get => _waveformPeaks;
+        set => SetProperty(ref _waveformPeaks, value);
+    }
+
     private double _position;
     public double Position
     {
@@ -262,6 +269,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             _player.Load(path);
             Duration = _player.Duration;
             CurrentFilePath = path;
+            // D2: waveform reflects the actual audio file (source of truth),
+            // independent of the analysis pipeline. BASS is paused at this point
+            // (Load only, no Play), so ChannelGetData does not race with the DSP.
+            WaveformPeaks = _player.ExtractWaveformPeaks(bucketCount: 400);
 
             _pipeline = CreateAnalyzerPipeline();
             SwitchToLive();
@@ -276,6 +287,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             StatusText = $"Load failed: {ex.Message}";
             Duration = 0;
             CurrentFilePath = null;
+            WaveformPeaks = null;
         }
         await Task.CompletedTask;
     }
@@ -547,6 +559,10 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             _player.Load(audioPath);
             Duration = _player.Duration;
             CurrentFilePath = audioPath;
+            // Same as LoadFileAsync: waveform is truth from PCM, not from .nvproj.
+            // Imported mode uses replay, but the file on disk is the same audio —
+            // peaks are valid.
+            WaveformPeaks = _player.ExtractWaveformPeaks(bucketCount: 400);
 
             // 3. Восстановление событий.
             foreach (var ev in loaded.Document.Timeline.Events)
