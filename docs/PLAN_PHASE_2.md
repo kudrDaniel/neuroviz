@@ -205,6 +205,11 @@ JSON-изменений нет. Детали тюнинга — в `TUNING.md §
 fallback slow-positive + large-scale, документировано в TUNING.md).
 Переход плавный по природе (5 s lifetime → эволюция, не рывок).
 
+**2.4b реализовано:** idle-камера (орбита 0.05 rad/s, Y-покачивание
+0.03 rad/s амplituda 0.4, Лиссажу). Привязана к `_visualTime`, не к
+audio clock — работает на паузе и переживает seek. Тюнинг в
+`UpdateIdleCamera`; детали — в `TUNING.md §«Idle-камера»`.
+
 ---
 
 ### 2.5 — Polish

@@ -7,6 +7,7 @@ public partial class MainNode3D : Node3D
     private MeshInstance3D _sphere = null!;
     private ShaderMaterial _material = null!;
     private Label _fpsLabel = null!;
+    private Camera3D _camera = null!;
 
     private float _contLow;
     private float _contHarmonicity;
@@ -70,10 +71,18 @@ public partial class MainNode3D : Node3D
         AddChild(_sphere);
 
         // ── Camera ─────────────────────────────────────────────────
-        // Static; idle orbit is 2.4b.
-        var camera = new Camera3D { Position = new Vector3(0, 0, 2.5f) };
-        AddChild(camera);
-        camera.LookAt(Vector3.Zero);
+        // Initial position is the orbit's start point (_visualTime = 0 at
+        // _Ready), so there is no visible "jump" when _Process begins moving
+        // it. LookAt is re-issued each frame in _Process, no need here.
+        _camera = new Camera3D
+        {
+            Position = new Vector3(
+                2.5f,   // cos(0) * radius
+                0.0f,   // sin(0) * yAmp
+                0.0f),  // sin(0) * radius
+        };
+        AddChild(_camera);
+        _camera.LookAt(Vector3.Zero);
 
         // ── Light ──────────────────────────────────────────────────
         // Directional light with shadows. Displaced spikes cast into the
@@ -229,10 +238,14 @@ public partial class MainNode3D : Node3D
 
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
-            $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | high: {_smoothHigh:F3} | Cont: {contCount}\n" +
+            $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | high: {_smoothHigh:F3} | " +
+            $"Cont: {contCount}\n" +
             $"pulse: {currentPulse:F2} | shiver: {currentShiver:F2} | flash: {currentFlash:F2} | " +
             $"mid: {_smoothMid:F2} | flux: {_smoothFlux:F2} | pan: {_smoothPan:F2} | " +
-            $"traj: {_currentTrajectory} | parts: {_ambientParticles.AmountRatio:F2}";
+            $"traj: {_currentTrajectory} | parts: {_ambientParticles.AmountRatio:F2}\n" +
+            $"cam: x={_camera.Position.X:F2} y={_camera.Position.Y:F2} z={_camera.Position.Z:F2}";
+
+        UpdateIdleCamera();
 
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))
@@ -423,6 +436,31 @@ public partial class MainNode3D : Node3D
         // lifetime the transition reads as a slow, organic drift, not a
         // cut. This is intentional: trajectory changes should not feel
         // like flipping a switch.
+    }
+
+    /// <summary>
+    /// Slow idle orbit around the sphere. Independent of audio state —
+    /// _visualTime advances in _Process regardless of playback, so the
+    /// scene is "alive" even when paused. Radii and frequencies picked so
+    /// a full revolution takes ~2 minutes (0.05 rad/s) with a secondary
+    /// Y-sway at an unrelated frequency (0.03 rad/s, amplitude 0.4) that
+    /// produces a gentle Lissajous drift rather than a flat circle.
+    /// </summary>
+    private void UpdateIdleCamera()
+    {
+        const float orbitRadius = 2.5f;
+        const float orbitSpeed = 0.05f;   // rad/s → 2π/0.05 ≈ 126 s per rev
+        const float ySpeed = 0.03f;       // rad/s, deliberately not a multiple
+        const float yAmplitude = 0.4f;
+
+        var angle = (float)_visualTime * orbitSpeed;
+        var y = Mathf.Sin((float)_visualTime * ySpeed) * yAmplitude;
+
+        _camera.Position = new Vector3(
+            Mathf.Cos(angle) * orbitRadius,
+            y,
+            Mathf.Sin(angle) * orbitRadius);
+        _camera.LookAt(Vector3.Zero);
     }
 
     public override void _ExitTree() => _ipc.Dispose();
