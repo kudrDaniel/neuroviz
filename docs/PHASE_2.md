@@ -1,203 +1,126 @@
-# NeuroViz — Phase 2 (после MVP)
+# NeuroViz — Phase 2
 
-Набросок того, что идёт **после** полного MVP. Не план с точными
-оценками, а карта возможностей и их взаимных зависимостей. Каждый
-блок — потенциальная отдельная итерация, которую можно брать
-независимо.
+**Статус:** в работе. MVP закрыт (A/B/C/D). Это горизонт, на котором
+строится 3D-визуализация, preview в инспекторе и window management.
 
-**Смысл документа:** зафиксировать, что мы сознательно **не делаем**
-в MVP, и почему. Чтобы не расширять scope MVP по ходу, и чтобы не
-потерять идеи.
+**Полный план:** `docs/PLAN_PHASE_2.md`. Здесь — карта возможностей
+Phase 2 и того, что сознательно отложено в Phase 2.5+ / never.
 
 ---
 
-## P2-A. Preview-thumbnail в инспекторе
+## В scope Phase 2
 
-**Боль:** настраивая правило в JSON, не видишь результат без переключения
-на окно Godot. Alt-Tab ради каждого изменения.
+### P2-C — 3D-сцена
 
-**Решение:** Godot рендерит кадр 320×180 раз в 200 мс, шлёт по
-EventStream pipe отдельным типом кадра. Инспектор показывает `Image`
-в углу. Клик по thumbnail → фокус на полном окне Godot.
+**Цель:** сфера с шипами, частицы, idle-камера, palette. Реагирует
+на continuous (`band_energy.*`, `spectral_flux`, `vad_state`,
+`speech_music_ratio`) и events (`pulse`, `release`, `stream_boundary`).
 
-**Технически:**
-- `EventStreamFrame` → `EventStreamFrame` или новый тип `PreviewFrame`.
-- Godot: `GetViewport().GetTexture().GetImage()` → PNG/JPEG-байты.
-- Инспектор: `Bitmap` из байтов, обновление через
-  `Dispatcher.UIThread.Post`.
-- IPC-нагрузка: 5–20 КБ × 5 fps ≈ 100 КБ/с. Незаметно.
+**Компоненты (полностью — в PLAN_PHASE_2.md §2.4):**
+- Icosphere, displacement по нормали (pulse + band_energy.low).
+- `spikiness` uniform от harmonicity или spectral_centroid (O1).
+- `GPUParticles3D`: density от band_energy.mid или flux (O2),
+  emission-всплески от flux, смещение от pan_x, смена траектории
+  от stream_boundary (O3).
+- Idle-камера (медленный orbit).
+- Palette от shiver/novelty/pitch/band_energy.high.
 
-**Не делать:** reparenting HWND, offscreen render на 60 fps, streaming
-видео. Только статичная превьюшка.
+**Kill switch:** обязательный spike 2–3 дня перед full. Если spike
+не проходит по тех/функц/визуальным критериям — обсуждение, возможно
+пересмотр.
 
-**Оценка:** 1–2 дня.
-
----
-
-## P2-B. Управление окном Godot из инспектора
-
-**Боль:** «открыл вторую сцену — ищу окно Godot по Alt-Tab».
-
-**Решение:**
-- Кнопка **Fullscreen on monitor 2** — `DisplayServer.WindowSetCurrentScreen(1)`
-  + `WINDOW_MODE_FULLSCREEN` в Godot, через Control pipe.
-- Кнопка **Always on top** — `WINDOW_FLAG_ALWAYS_ON_TOP`.
-- Запоминать позицию / размер окна в `settings.json`.
-
-**Расширение Control pipe:** `ControlKinds.SetWindowMode`, `SetAlwaysOnTop`,
-`SetGeometry`. Сейчас там есть только hello / play / pause / seek —
-скелет готов, нужно просто добавить обработчики.
-
-**Оценка:** 2–3 часа.
+**Оценка:** spike 2–3 дня, full 3–4 недели.
 
 ---
 
-## P2-C. 3D-сцена
+### P2-A — Preview-thumbnail
 
-**Боль:** плоский квадрат — proof of concept. Настоящая визуализация
-требует глубины, частиц, шейдеров.
+Godot рендерит кадр 320×180 раз в 200 мс (5 fps) и шлёт по IPC
+отдельным типом `PreviewFrame`. Инспектор показывает `Image` в углу.
+`ProtocolVersion` 2→3. Клик по thumbnail — **не** фокусирует Godot
+(отменено: два процесса, QoL).
 
-**Решение:** Godot 4 3D-сцена.
-- Камера с лёгким orbit от pan_x (стерео).
-- Частицы / поле точек, реагирующих на band_energy.
-- Шейдерные эффекты на novelty (вспышки, искажения).
-- Пост-процессинг (bloom, chromatic aberration) от spectral_centroid.
-
-**Ключевой дизайн-принцип:** continuous params (B2/B3) — идеальные
-входы для шейдеров. `band_energy.low → density частиц`,
-`band_energy.high → emissive color`, `novelty → distortion intensity`.
-События (onset, boundary) — триггеры для анимации.
-
-**Что нужно из MVP:**
-- B2 (continuous params) — пререквизит.
-- B3 (band_energy) — источник для шейдеров.
-- C1 (VAD) — переключение 3D-слоя (голос/инструментал).
-
-**Оценка:** 1–2 недели. Это **главная** фича, которая определяет,
-взлетит проект или нет.
+**Оценка:** 1 день.
 
 ---
 
-## P2-D. `motif_repetition` — узнавание мотивов
+### P2-B — Window management
 
-**Боль:** визуализатор не различает припев от нового материала. Мозг
-узнаёт тему через 2–3 секунды, визуал — нет.
+- **Fullscreen on monitor N** — `DisplayServer.WindowSetCurrentScreen(N)`
+  + `WINDOW_MODE_FULLSCREEN`, по Control-команде.
+- **Always on top** — `WINDOW_FLAG_ALWAYS_ON_TOP`, по Control-команде.
+- **Geometry persistence** — `settings.json`, не `.nvproj`.
 
-**Решение:**
-1. Chromagram (12 полутонов) по кадрам STFT.
-2. Self-similarity matrix (SSM) — матрица косинусных сходств между
-   кадрами.
-3. Пики на диагоналях SSM = повторяющиеся мотивы.
-4. Событие `motif_repetition` с `params.similarity` и `params.motif_id`.
-
-**Технически:** самое тяжёлое из нереализованных событий. Требует
-~5–10 секунд истории. Считается нарастающе (windowed SSM), не на
-каждом кадре. Естественно ложится на analyzer-thread (фикс 5.1).
-
-**Применение в визуале:** «припев узнаётся» → визуальный повтор
-(частицы возвращаются в исходную конфигурацию, цвет всплывает).
-
-**Оценка:** 1–2 недели.
+**Оценка:** 3–4 часа.
 
 ---
 
-## P2-E. Node-graph rule editor
+## Phase 2.5+ (после Phase 2 MVP)
 
-**Боль:** JSON — мощно, но не для конечного пользователя. Каждое
-правило — текстовый редактор + Reload.
+Не в обозримом будущем — отдельные итерации:
 
-**Решение:** визуальный редактор в стиле TouchDesigner / Blender
-Geometry Nodes, встроенный в Avalonia.
-- Узлы: `Onset`, `Novelty`, `BandEnergy`, `Filter`, `Action`, `Param`.
-- Рёбра: connections.
-- Экспорт в тот же JSON-формат (`samples/rules/*.json`).
+### Motif detector (DSP)
 
-**Совместимость:** JSON — единственный источник правды. Node-graph
-редактор — **view** над ним. Один и тот же формат читается и
-текстовым редактором, и визуальным. Это **сильная сторона** текущего
-дизайна — не потерять её.
+Chromagram (12 полутонов) по STFT-кадрам → self-similarity matrix →
+пики на диагоналях → событие `motif_repetition`. Требует ~5–10 с
+истории, окно SSM. 1–2 недели.
 
-**Оценка:** недели. Отдельный проект, не итерация.
+**Замечание:** визуальная часть «припев узнаётся» **уже** решается
+через `stream_boundary` в P2-C (смена траектории частиц). Motif как
+DSP — дополнительная уникальность, не блокирует базовый визуал.
 
----
+### Offline export (P2-F) + offline pipeline (KI-3)
 
-## P2-F. Offline export
+Headless-рендер `--fixed-fps 60` + захват `get_viewport().get_texture()`
+→ ffmpeg subprocess → MP4 1080p. Требует offline pipeline (анализ без
+realtime BASS). KI-3 (быстрый Re-analyze) закрывается тем же pipeline.
+1–2 недели.
 
-**Боль:** нет способа получить видео. Только realtime-визуализация
-вживую.
+### Cross-platform (P2-G)
 
-**Решение:** headless-рендер.
-- Godot `--headless --export` + виртуальный звук или заранее
-  сгенерированный поток параметров.
-- Или: прогон детекторов в offline-режиме (без realtime) → сохранение
-  в `EventTimeline` → прогон визуализатора с `--fixed-fps 60` → захват
-  через `get_viewport().get_texture().get_image()`.
-- Кодирование: ffmpeg через subprocess.
+BASS libs для Linux/macOS (`bass.so`, `bass.dylib`), проверка
+`NamedPipe` / `MemoryMappedFile` на Unix. Архитектурных блокеров нет —
+все API .NET кросс-платформенные. 1 неделя.
 
-**Технически:** сложно из-за realtime-архитектуры BASS. Альтернатива —
-отдельный путь: оффлайн STFT + детекторы (уже работают, тест
-`DetectsClicksInClickTrain` это подтверждает) → параметры во времени
-→ симуляция шейдера с фиксированным dt.
+### Node-graph editor (P2-E)
 
-**Оценка:** 1–2 недели (зависит от того, насколько глубоко лезть в
-Godot headless).
+Визуальный редактор в стиле TouchDesigner, **view над JSON** (не замена
+формата). Отдельный проект: недели масштаба. JSON остаётся единственным
+источником правды.
+
+### Heatmap spectrum (P2-I)
+
+Полноценная спектрограмма (time × frequency) в Debug-режиме. Требует
+либо хранения полной `Magnitudes` (дорого), либо 128-полосной компактной
+версии. 2–3 дня.
 
 ---
 
-## P2-G. Кроссплатформенность (Linux, macOS)
+## Вне плана (никогда)
 
-**Что уже работает:**
-- Avalonia — кросс-платформенная.
-- Godot — кросс-платформенный.
-- `System.IO.Pipes`, `MemoryMappedFile`, `File` — кросс-платформенные
-  API.
+### P2-H — Multi-track
 
-**Что мешает:**
-- BASS: нужны `bass.so` / `bass.dylib` для Linux/macOS. Они есть на
-  `un4seen.com`, лицензионные ограничения те же (не хранить в репо).
-- Named Pipes: на Windows — `\\.\pipe\name`, на Unix — Unix domain
-  sockets. .NET делает это прозрачно, но **межпроцессные** имена
-  pipe'ов на Linux — это файлы в файловой системе (`/tmp/CoreFxPipe_*`).
-  Работает, но нужно проверить, что имена не конфликтуют.
-- MemoryMappedFile: именованные MMF на Linux — `/dev/shm/`, тоже
-  работает, но требует проверки.
-- `Process.Kill()` на Linux — не убивает дочерние процессы
-  (нет `TREE`), нужно следить за child'ами Godot отдельно.
+Принципиально другая задача: сведение ≠ визуализация. Сознательно
+не совмещаем.
 
-**Оценка:** 1 неделя.
+### Click-to-focus preview (старый D3)
+
+Два процесса, QoL, не критично. Отменено.
 
 ---
 
-## P2-H. Multi-track (несколько аудио на одном таймлайне)
+## Критерий «Phase 2 достигнута»
 
-**Боль:** визуализация DJ-сета, ремикса, коллажа — несколько файлов.
+Полный список — в `PLAN_PHASE_2.md §8`. Краткая сводка:
 
-**Решение:** архитектурно большая переделка.
-- `EventTimeline` расширяется: `List<AudioTrack>` с `start_offset` и
-  `duration`.
-- Playback: BASS mixer (уже подключён `ManagedBass.Mix` в csproj, но
-  не используется).
-- Event stream: `event.track_id` в `AudioEvent`.
-- Timeline UI: дорожки, как в DAW.
+1. 3D-сцена реагирует на continuous + events.
+2. Preview-thumbnail в инспекторе, Reload Rules видно в preview.
+3. Fullscreen на monitor N + always-on-top из Settings.
+4. Save → Load → сцена играет без live (continuous из `.nvproj` v3).
+5. Настройка не требует редактирования `.json` руками.
 
-**Оценка:** недели. Отдельный проект. Не для ближайшего будущего.
-
----
-
-## P2-I. Своя визуализация спектра в Debug-режиме
-
-**Боль:** `SpectrumControl` рисует усреднённые 32 полосы. Полезно,
-но грубо. Хочется heatmap спектрограммы (time × frequency).
-
-**Решение:**
-- В `.nvproj` (если решено хранить `DownsampledSpectrum` в A1) —
-  расширить до 64×N или отдельного `List<SpectrogramFrame>`.
-- Или: хранить полную `Magnitudes` (1025 float = 4 КБ на кадр) для
-  последних N секунд — 100 МБ за минуту. Дорого.
-- Компромисс: хранить 128 полос на событие + отдельный компактный
-  спектр (STFT-фреймы пониженного разрешения, 32 полосы × 40 Гц).
-
-**Оценка:** 2–3 дня.
+Когда все пять — `docs/PHASE_2.md` помечается «achieved», следующий
+горизонт — Phase 2.5.
 
 ---
 
@@ -205,23 +128,28 @@ Godot headless).
 
 | Фича | Ценность | Стоимость | Приоритет |
 |---|---|---|---|
-| P2-A Preview | Высокая (tuning) | Низкая (1–2 дня) | **Делать сразу после MVP** |
-| P2-B Управление окном | Средняя | Очень низкая | Делать сразу после MVP |
-| P2-C 3D-сцена | **Критическая** | Высокая | Главная цель проекта |
-| P2-D Motif | Высокая (уникальность) | Очень высокая | После 3D |
-| P2-E Node-graph | Высокая (UX) | Очень высокая | Отдельный проект |
-| P2-F Export | Высокая | Высокая | После 3D |
-| P2-G Кроссплатформенность | Средняя | Средняя | По запросу |
-| P2-H Multi-track | Средняя | Очень высокая | Не в обозримом будущем |
-| P2-I Spectrum viz | Низкая | Средняя | Опционально |
+| P2-C 3D-сцена | **Критическая** | Высокая | **Главная цель Phase 2** |
+| P2-A Preview | Высокая (tuning) | Низкая | Сразу после spike |
+| P2-B Window mgmt | Средняя (QoL) | Очень низкая | Параллельно, 3–4 ч |
+| Motif (DSP) | Высокая (уникальность) | Очень высокая | Phase 2.5 |
+| Offline export | Высокая | Высокая | Phase 2.5 |
+| Cross-platform | Средняя | Средняя | Phase 2.5, по запросу |
+| Node-graph | Высокая (UX) | Очень высокая | Отдельный проект someday |
+| Heatmap | Низкая | Средняя | Phase 2.5, опционально |
 
 ---
 
-## Критерий «Phase 2 достигнута»
+## Что уже готово к Phase 2 (фундамент)
 
-> Визуализация в 3D, шейдеры, частицы. Пользователь может настроить
-> её через JSON или node-graph, увидеть в preview-thumbnail, и
-> экспортировать в видео на диск.
-
-Это уже не «инструмент», а **продукт**. Дальше — маркетинг, community,
-или превращение в коммерческий проект.
+- **Continuous-канал** — 8 ключей в `EventStreamFrame.ContinuousParams`,
+  `schema v3` в `.nvproj`.
+- **IPC**: Control pipe (hello, hello_ack), EventStream pipe, MMF audio clock.
+- **Replay continuous** через `ContinuousInterpolation` — Load project =
+  полный визуал без live.
+- **3D-ready данные**: `band_energy.{low,mid,high}`, `spectral_flux`,
+  `vad_state`, `speech_music_ratio`, `spectral_centroid`, `harmonicity` —
+  все доступны в `EventStreamFrame` каждый тик.
+- **Events**: onset, offset, novelty, pitch_salience, azimuth_estimate,
+  stream_boundary. Достаточно для шейдерных «попаданий».
+- **Rules**: JSON → params (pulse, shiver, release, stream_glow,
+  stream_fade, pan_x, pitch_height). Работают в 3D без изменений.
