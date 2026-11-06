@@ -8,6 +8,10 @@ public partial class MainNode3D : Node3D
     private ShaderMaterial _material = null!;
     private Label _fpsLabel = null!;
     private Camera3D _camera = null!;
+    // Configurable via Settings (2.4f). Defaults match AppSettings; updated
+    // when the App sends SetVisualConfig at Launch.
+    private float _cameraOrbitSpeed = 0.05f;
+    private float _cameraYAmplitude = 0.4f;
 
     private float _contLow;
     private float _contHarmonicity;
@@ -119,6 +123,7 @@ public partial class MainNode3D : Node3D
 
         _ipc = new IpcClient();
         _ipc.Start();
+        _ipc.VisualConfigReceived += OnVisualConfigReceived;
     }
 
     public override void _Process(double delta)
@@ -449,12 +454,11 @@ public partial class MainNode3D : Node3D
     private void UpdateIdleCamera()
     {
         const float orbitRadius = 2.5f;
-        const float orbitSpeed = 0.05f;   // rad/s → 2π/0.05 ≈ 126 s per rev
-        const float ySpeed = 0.03f;       // rad/s, deliberately not a multiple
-        const float yAmplitude = 0.4f;
+        const float ySpeed = 0.03f;       // keep Y frequency fixed
+                                          // orbitSpeed and yAmplitude are fields (2.4f, configurable).
 
-        var angle = (float)_visualTime * orbitSpeed;
-        var y = Mathf.Sin((float)_visualTime * ySpeed) * yAmplitude;
+        var angle = (float)_visualTime * _cameraOrbitSpeed;
+        var y = Mathf.Sin((float)_visualTime * ySpeed) * _cameraYAmplitude;
 
         _camera.Position = new Vector3(
             Mathf.Cos(angle) * orbitRadius,
@@ -463,7 +467,29 @@ public partial class MainNode3D : Node3D
         _camera.LookAt(Vector3.Zero);
     }
 
-    public override void _ExitTree() => _ipc.Dispose();
+    private void OnVisualConfigReceived(NeuroViz.Core.Ipc.SetVisualConfigPayload p)
+    {
+        // Called on main thread (IpcClient enqueues, DrainMainThreadActions
+        // runs on main thread). Clamp here so hand-edited settings.json
+        // cannot break FPS.
+        _cameraOrbitSpeed = Mathf.Clamp(p.CameraOrbitSpeed, 0.01f, 0.2f);
+        _cameraYAmplitude = Mathf.Clamp(p.CameraYAmplitude, 0.0f, 1.0f);
+
+        if (_ambientParticles != null)
+            _ambientParticles.Amount = Mathf.Clamp(p.AmbientParticleCount, 20, 1000);
+        if (_burstParticles != null)
+            _burstParticles.Amount = Mathf.Clamp(p.BurstParticleCount, 20, 500);
+
+        GD.Print($"[Visual] Config applied: orbit={_cameraOrbitSpeed:F2} " +
+                 $"yAmp={_cameraYAmplitude:F2} ambient={_ambientParticles?.Amount} " +
+                 $"burst={_burstParticles?.Amount}");
+    }
+
+    public override void _ExitTree()
+    {
+        _ipc.VisualConfigReceived -= OnVisualConfigReceived;
+        _ipc.Dispose();
+    }
 
     // ── Pulse state helper ──────────────────────────────────────────
     // ParamValue is NeuroViz.Core.Ipc.ParamValue (MessagePack object,

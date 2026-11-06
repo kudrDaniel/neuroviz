@@ -15,6 +15,7 @@ public static class ControlKinds
     // the long-lived Control pipe.
     public const string SetWindowMode = "set_window_mode";
     public const string SetAlwaysOnTop = "set_always_on_top";
+    public const string SetVisualConfig = "set_visual_config";
 }
 
 public static class IpcConstants
@@ -24,7 +25,7 @@ public static class IpcConstants
     // (Godot-side server parks on WaitForConnectionAsync, no cost); old
     // Godot does not serve (App-side client retries once/sec, preview
     // stays null).
-    public const int ProtocolVersion = 4;
+    public const int ProtocolVersion = 5;
     public const string ControlPipeName = "NeuroViz.Control";
     public const string EventStreamPipeName = "NeuroViz.EventStream";
     public const string AudioClockMapName = "NeuroViz.AudioClock";

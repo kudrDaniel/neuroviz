@@ -210,6 +210,14 @@ fallback slow-positive + large-scale, документировано в TUNING.m
 audio clock — работает на паузе и переживает seek. Тюнинг в
 `UpdateIdleCamera`; детали — в `TUNING.md §«Idle-камера»`.
 
+**2.4f реализовано:** четыре настройки в Settings UI
+(camera orbit speed, Y amplitude, ambient/burst particle counts),
+применяются при Launch через `SetVisualConfig` Control-команду.
+TUNING.md: секция 3D-визуализатора финализирована (оглавление,
+cross-references, настройки). README: секция «3D-визуализатор».
+
+**P2-C полностью закрыт.** Все шесть подэтапов (2.4a–f) в master.
+
 ---
 
 ### 2.5 — Polish

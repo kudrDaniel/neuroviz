@@ -476,6 +476,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         // connects (within ~1 s of launch). Non-blocking.
         _ipcServer.SendWindowMode(Settings.VisualizerMonitorIndex, fullscreen: true);
         _ipcServer.SendAlwaysOnTop(Settings.VisualizerAlwaysOnTop);
+        _ipcServer.SendVisualConfig(new SetVisualConfigPayload
+        {
+            CameraOrbitSpeed = Settings.CameraOrbitSpeed,
+            CameraYAmplitude = Settings.CameraYAmplitude,
+            AmbientParticleCount = Settings.AmbientParticleCount,
+            BurstParticleCount = Settings.BurstParticleCount,
+        });
 
         // Проверяем через 750 мс: если Godot упал, показываем код выхода.
         var captured = proc;

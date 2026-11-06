@@ -89,6 +89,11 @@ public partial class SettingsWindow : Window
         if (MonitorBox.ItemCount > 0) MonitorBox.SelectedIndex = idx;
 
         AlwaysOnTopBox.IsChecked = _target.VisualizerAlwaysOnTop;
+
+        CameraOrbitSlider.Value = Math.Clamp(_target.CameraOrbitSpeed, 0.01, 0.2);
+        CameraYSlider.Value = Math.Clamp(_target.CameraYAmplitude, 0.0, 1.0);
+        AmbientSlider.Value = Math.Clamp(_target.AmbientParticleCount, 20, 1000);
+        BurstSlider.Value = Math.Clamp(_target.BurstParticleCount, 20, 500);
     }
 
     private void OnResetDefaults(object? sender, RoutedEventArgs e)
@@ -98,6 +103,10 @@ public partial class SettingsWindow : Window
         RulesPathBox.Text = "";
         MonitorBox.SelectedIndex = 0;
         AlwaysOnTopBox.IsChecked = false;
+        CameraOrbitSlider.Value = 0.05;
+        CameraYSlider.Value = 0.4;
+        AmbientSlider.Value = 400;
+        BurstSlider.Value = 120;
         HideAllErrors();
     }
 
@@ -126,6 +135,10 @@ public partial class SettingsWindow : Window
         _target.RulesPath = rulesPath;
         _target.VisualizerMonitorIndex = Math.Max(0, MonitorBox.SelectedIndex);
         _target.VisualizerAlwaysOnTop = AlwaysOnTopBox.IsChecked ?? false;
+        _target.CameraOrbitSpeed = (float)CameraOrbitSlider.Value;
+        _target.CameraYAmplitude = (float)CameraYSlider.Value;
+        _target.AmbientParticleCount = (int)AmbientSlider.Value;
+        _target.BurstParticleCount = (int)BurstSlider.Value;
         _target.Save();
         Close(true);
     }

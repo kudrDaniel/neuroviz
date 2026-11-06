@@ -38,6 +38,15 @@ public sealed class AppSettings
     /// </summary>
     public bool VisualizerAlwaysOnTop { get; set; }
 
+    // 3D visualizer tuning (2.4f). Sent to Godot at Launch on the Control
+    // pipe; Godot applies them without restart. Bounds are enforced by the
+    // Settings UI and re-clamped in ApplyVisualConfig (defence-in-depth
+    // against hand-edited settings.json).
+    public float CameraOrbitSpeed { get; set; } = 0.05f;   // rad/s
+    public float CameraYAmplitude { get; set; } = 0.4f;    // world units
+    public int AmbientParticleCount { get; set; } = 400;
+    public int BurstParticleCount { get; set; } = 120;
+
     public static string DefaultPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

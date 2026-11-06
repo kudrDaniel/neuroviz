@@ -35,3 +35,13 @@ public sealed class SetAlwaysOnTopPayload
 {
     [Key(0)] public bool Enabled { get; init; }
 }
+
+// 2.4f: visualizer tuning payload.
+[MessagePackObject]
+public sealed class SetVisualConfigPayload
+{
+    [Key(0)] public float CameraOrbitSpeed { get; init; }
+    [Key(1)] public float CameraYAmplitude { get; init; }
+    [Key(2)] public int AmbientParticleCount { get; init; }
+    [Key(3)] public int BurstParticleCount { get; init; }
+}

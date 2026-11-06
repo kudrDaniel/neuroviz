@@ -34,6 +34,13 @@ public sealed class IpcClient : IDisposable
 
     public bool IsConnected { get; private set; }
 
+    /// <summary>
+    /// Fires on the main thread (via the pending-action queue) when the
+    /// App pushes a SetVisualConfig command. Subscribers apply the values
+    /// to live objects (camera, particle emitters).
+    /// </summary>
+    public event Action<SetVisualConfigPayload>? VisualConfigReceived;
+
     public void Start()
     {
         _ = Task.Run(ConnectControlPipeAsync);
@@ -187,6 +194,11 @@ public sealed class IpcClient : IDisposable
                     msg.Payload, MessagePackOptions.Default);
                 _pendingMainThreadActions.Enqueue(
                     () => ApplyAlwaysOnTop(top.Enabled));
+                break;
+            case ControlKinds.SetVisualConfig:
+                var visual = MessagePackSerializer.Deserialize<SetVisualConfigPayload>(
+                    msg.Payload, MessagePackOptions.Default);
+                _pendingMainThreadActions.Enqueue(() => VisualConfigReceived?.Invoke(visual));
                 break;
             default:
                 GD.Print($"[IPC] Unknown control kind: {msg.Kind}");

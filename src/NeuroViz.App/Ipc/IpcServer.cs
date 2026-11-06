@@ -138,6 +138,16 @@ public sealed class IpcServer : IDisposable
         _controlQueue.Writer.TryWrite(msg);
     }
 
+    public void SendVisualConfig(SetVisualConfigPayload payload)
+    {
+        var msg = new ControlMessage
+        {
+            Kind = ControlKinds.SetVisualConfig,
+            Payload = MessagePackSerializer.Serialize(payload, MessagePackOptions.Default),
+        };
+        _controlQueue.Writer.TryWrite(msg);
+    }
+
     private async Task AcceptControlPipeAsync()
     {
         while (!_cts.IsCancellationRequested)

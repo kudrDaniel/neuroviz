@@ -339,6 +339,28 @@ continuous. Оно сохраняется в `.nvproj` (это `AudioEvent`), д
   серому (`Color.Lerp` к `(0.3, 0.3, 0.3)`, `currentFade * 0.5f`).
   `decayMs` = 2000 — «выдох» длиннее, чем вспышка открытия.
 
+### 3D-визуализатор (Phase 2)
+
+Основная сцена — `MainNode3D` (spike), 2D `MainNode` остаётся как fallback.
+
+Разделы по компонентам:
+- **[Палитра](#3d-палитра-24e)** — цвета, emissive (2.4e)
+- **[Частицы](#3d-частицы-24c)** — ambient, burst (2.4c)
+- **[Pan и траектория](#pan-и-траектория-24d)** — pan_x, stream_boundary (2.4d)
+- **[Idle-камера](#idle-камера-24b)** — orbit + sway (2.4b)
+
+**Настройки в UI** (Settings → «3D visualizer tuning»):
+- `Camera orbit speed` — 0.01–0.2 rad/s (default 0.05, ~126 s на оборот)
+- `Camera Y amplitude` — 0.0–1.0 (default 0.4)
+- `Ambient particles` — 20–1000 (default 400)
+- `Burst particles` — 20–500 (default 120)
+
+Все четыре применяются при **Launch Visualizer**. Если Godot уже
+запущен и ты поменял настройки — перезапусти Godot (Launch после
+закрытия). Runtime-update через UI в Phase 2 не реализован —
+храним консистентность с P2-B (fullscreen/always-on-top тоже
+применяются при Launch).
+
 ### 3D-палитра (2.4e)
 
 Сфера в 3D реагирует на четыре входных параметра — три event-driven
@@ -456,13 +478,10 @@ trajectory. Fast-секция с оранжевым shiver ≠ проблема;
 продолжает orbit. Причина: если камера «замирает» при паузе, сцена
 читается как сломанная; если «прыгает» при seek — дизориентирует.
 
-**Тюнинг в `UpdateIdleCamera`** (`MainNode3D.cs`):
-- `orbitRadius` (2.5) — ближе к сфере (1.8) = интимнее, дальше
-  (3.5) = обзорнее.
-- `orbitSpeed` (0.05) — быстрее (0.1) = ощутимее движение, медленнее
-  (0.02) = почти статично.
-- `ySpeed` (0.03) / `yAmplitude` (0.4) — покачивание. При 0 камера
-  ходит по чистой окружности.
+**Тюнинг:** `Camera orbit speed` и `Camera Y amplitude` — в Settings UI
+(2.4f). `orbitRadius` (2.5) и `ySpeed` (0.03) — константы в
+`UpdateIdleCamera`, меняются только правкой кода (намеренно: редко
+возникает необходимость, а плодить настройки ради настроек — плохо).
 
 **Не в scope:** взаимодействие с пользователем (drag-to-rotate),
 fov-анимации, разные траектории для разных секций. Это Phase 2.5,
