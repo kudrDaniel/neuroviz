@@ -119,10 +119,58 @@ public class ProjectRoundTripTests
     }
 
     [Fact]
-    public void SchemaVersions_AreTwo()
+    public void ContinuousFrames_RoundTrip()
     {
-        Assert.Equal(2, ProjectDocument.CurrentVersion);
-        Assert.Equal(2, new EventTimeline().SchemaVersion);
-        Assert.Equal(2, new AudioEvent().SchemaVersion);
+        var doc = new ProjectDocument
+        {
+            Name = "t",
+            Timeline = new EventTimeline
+            {
+                ContinuousFrames =
+            {
+                new ContinuousFrame
+                {
+                    TimestampSeconds = 0.0,
+                    Values = new float[] { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0f, 0f, 0.6f },
+                },
+                new ContinuousFrame
+                {
+                    TimestampSeconds = 1.5,
+                    Values = new float[] { 0.7f, 0.8f, 0.9f, 1.0f, 0.5f, 1f, 0.5f, 0.3f },
+                },
+            },
+            },
+        };
+
+        var back = ProjectSerializer.Deserialize(ProjectSerializer.Serialize(doc));
+
+        Assert.Equal(2, back.Timeline.ContinuousFrames.Count);
+        Assert.Equal(0.0, back.Timeline.ContinuousFrames[0].TimestampSeconds);
+        Assert.Equal(0.1f, back.Timeline.ContinuousFrames[0].Values[0]);
+        Assert.Equal(1.5, back.Timeline.ContinuousFrames[1].TimestampSeconds);
+        Assert.Equal(0.9f, back.Timeline.ContinuousFrames[1].Values[2]);
+    }
+
+    [Fact]
+    public void ContinuousFrames_MissingInPayload_DefaultsToEmpty()
+    {
+        // v2 project: EventTimeline without Key(6). Property initializer
+        // provides empty list; MessagePack leaves it untouched.
+        var timeline = new EventTimeline();
+        Assert.Empty(timeline.ContinuousFrames);
+
+        var doc = new ProjectDocument { Name = "t", Timeline = timeline };
+        var back = ProjectSerializer.Deserialize(ProjectSerializer.Serialize(doc));
+
+        Assert.NotNull(back.Timeline.ContinuousFrames);
+        Assert.Empty(back.Timeline.ContinuousFrames);
+    }
+
+    [Fact]
+    public void SchemaVersions_AreThree()
+    {
+        Assert.Equal(3, ProjectDocument.CurrentVersion);
+        Assert.Equal(3, new EventTimeline().SchemaVersion);
+        Assert.Equal(2, new AudioEvent().SchemaVersion);   // unchanged in v3
     }
 }

@@ -70,39 +70,37 @@ B1b/B1c.
 
 ### KI-2: Continuous params не сохраняются в `.nvproj`
 
-**Симптом.** После Load project (MVP-A1) и Play в replay-режиме
+**Статус:** ✅ **закрыт** (schema v3).
+
+**Симптом (был).** После Load project (MVP-A1) и Play в replay-режиме
 `ContinuousParams` в `EventStreamFrame` пуст. Визуализатор держит
-последние значения из live-сессии — визуал «замораживается» на
-индикаторах (`spectral_centroid`, `harmonicity`), которые в live
-двигались.
+последние live-значения — визуал «замораживается» на индикаторах
+(`spectral_centroid`, `harmonicity`, `band_energy.{low,mid,high}`,
+`vad_state`, `speech_music_ratio`, `spectral_flux`), которые в live
+двигались. После перезапуска App — вообще нули.
 
-**Корневая причина.** `ContinuousParams` вычисляются в реальном
-времени из PCM; в `EventTimeline` (`.nvproj`) они не сохраняются.
-Затронуты `spectral_centroid`, `harmonicity`, `band_energy.{low,mid,high}`.
-Схема `EventTimeline` не имеет поля под continuous-историю.
+**Решение (schema v3).**
+- `EventTimeline [Key(6)] List<ContinuousFrame>` — timestamped samples.
+- `ContinuousFrame` — flat `float[8]` позиционно совместимый с
+  `ContinuousKeys.Ordered`. Изменение набора ключей требует bump
+  (позиционный wire contract).
+- `ContinuousKeys` — фиксированный набор 8 ключей (append-only).
+- `ContinuousInterpolation.EvaluateAt(frames, pos)` — бинарный поиск
+  + линейная интерполяция между соседними frames, clamp по краям.
+- Live-play собирает continuous в буфер (`RecordContinuousFrame` в
+  `OnTimerTick`, live-ветка) — Save захватывает всё, что играло.
+- Re-analyze собирает буфер заново с полным покрытием трека.
+- Seek назад → truncation буфера (защита от дублей timestamp).
+- Seek вперёд → «дырка», интерполяция сгладит.
+- Replay (Imported) → `ContinuousInterpolation` из `_continuousFrames`.
 
-**Не однострочный фикс.** Требуется:
-1. Расширить `EventTimeline` — `List<ContinuousSample>` или
-   `Dictionary<string, List<(double t, float v)>>`.
-2. Инкремент `EventTimeline.SchemaVersion` (1→2) и
-   `ProjectDocument.ProjectVersion` (1→2) + миграция.
-3. `SaveProjectAsync` пишет живую историю; `LoadProjectAsync`
-   восстанавливает.
-4. `MainNode` в replay ищет непрерывные значения по timestamp,
-   а не только latest.
-5. `band_energy.{low,mid,high}` (B3) добавляют 3 новых ключа. Пока
-   набор continuous-ключей не финализирован (B3/B4), сохранение
-   `EventTimeline` под них — преждевременная работа.
-
-**Заблокировано на:** MVP-C — `vad_state` и `speech_music_ratio`
-добавят ещё 2–3 continuous-ключа. Сохранять схему под 5 ключей, чтобы
-через неделю переделывать под 7 — расточительно. Сначала определить
-полный набор, потом один schema bump.
-
-**Обходной путь до закрытия.** В replay визуал работает от событий
-(pulse, shiver, pan, pitch). Continuous-индикаторы заморожены на
-последних значениях — визуально это «застывший фон», не баг
-логики.
+**Ограничения:**
+- Разрешение 20 Hz (drain раз в 50 мс; STFT 40 Hz теряет половину
+  фреймов). Для визуала достаточно (MainNode сглаживает `kc`/`kb`/`kf`).
+- Seek вперёд в live-сессии → дырка в буфере; интерполяция линейно
+  усреднит между двумя дальними frames.
+- Live-play после Re-analyze дописывает свежие frames; после seek
+  назад — truncation срабатывает, хвост отрезается. Это ожидаемо.
 
 ---
 

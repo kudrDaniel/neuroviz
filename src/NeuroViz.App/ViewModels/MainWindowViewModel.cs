@@ -122,9 +122,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     public AppSettings Settings { get; }
 
-    private static readonly IReadOnlyDictionary<string, float> EmptyContinuousParams
-    = new Dictionary<string, float>();
-
     public MainWindowViewModel()
     {
         Settings = AppSettings.Load();
@@ -180,6 +177,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     private readonly HashSet<(string Type, long TickMs)> _eventKeys = new();
 
+    private List<ContinuousFrame> _continuousFrames = new();
+
     private void OnTimerTick(object? sender, EventArgs e)
     {
         if (_disposed) return;
@@ -206,10 +205,16 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             currentPos = _pipeline.LastAnalyzedTimestamp;
             var batch = _pipeline.Sink.DrainAll();
-            // NEW: fresh continuous values from this tick's STFT frames.
             continuousParams = _pipeline.Sink.DrainContinuous();
-            eventsToSend = new List<AudioEvent>(batch.Count);
 
+            // KI-2: record continuous into the persistable buffer alongside the
+            // IPC send. These frames go into .nvproj on Save, then replay reads
+            // them through ContinuousInterpolation. Same drain feeds both paths
+            // — one channel, two consumers.
+            if (continuousParams.Count > 0)
+                RecordContinuousFrame(currentPos, continuousParams);
+
+            eventsToSend = new List<AudioEvent>(batch.Count);
             foreach (var analyzed in batch)
             {
                 // O(1) dedup: (Type, timestamp rounded to 1 ms) key.
@@ -227,9 +232,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 .Where(r => r.Timestamp > windowStart && r.Timestamp <= currentPos)
                 .Select(r => r.Source)
                 .ToList();
-            // Replay mode: no analysis pipeline → no continuous values.
-            // Visualizer holds last live values (see KNOWN_ISSUES.md).
-            continuousParams = EmptyContinuousParams;
+            continuousParams = ContinuousInterpolation.EvaluateAt(_continuousFrames, currentPos);
         }
 
         // Приоритеты: внутри одного события — побеждает высший приоритет
@@ -286,6 +289,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             StopPlayback();
             Events.Clear();
             _eventKeys.Clear();
+            _continuousFrames.Clear();
             _pipeline?.Dispose();
             _pipeline = null;
 
@@ -531,6 +535,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 AudioSha256 = sha,
                 DurationSeconds = Duration,
                 Events = Events.Select(r => r.Source).ToList(),
+                ContinuousFrames = new List<ContinuousFrame>(_continuousFrames),
                 AnalysisMeta =
             {
                 ["sampleRate"] = _player.SampleRate.ToString(),
@@ -573,6 +578,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         // Snapshot for restore-on-cancel.
         var originalEvents = new List<EventRow>(Events);
+        var originalContinuous = new List<ContinuousFrame>(_continuousFrames);
         var originalKeys = new HashSet<(string, long)>(_eventKeys);
         var savedPos = Position;
         var wasPlaying = _player.IsPlaying;
@@ -588,6 +594,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             _pipeline?.Dispose();
             _pipeline = CreateAnalyzerPipeline();
             _pipeline.Attach(_player);
+            _continuousFrames.Clear();
 
             _player.Seek(0);
             _player.Play();
@@ -610,6 +617,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                     _eventKeys.Clear();
                     foreach (var k in originalKeys) _eventKeys.Add(k);
 
+                    _continuousFrames.Clear();
+                    _continuousFrames.AddRange(originalContinuous);
+
                     _player.Pause();
                     _pipeline.Detach();
                     _player.Seek(savedPos);
@@ -625,7 +635,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 if (_player.Position >= totalDuration - 0.1) break;
 
                 DrainSinkToEvents();
-                _pipeline.Sink.DrainContinuous();   // discard — re-analysis is not the live visual feed
+                var cont = _pipeline.Sink.DrainContinuous();
+                if (cont.Count > 0)
+                    RecordContinuousFrame(_player.Position, cont);
 
                 var pct = (int)(100.0 * _player.Position / totalDuration);
                 StatusText = $"Re-analyzing… {pct}% ({Events.Count} events)";
@@ -684,6 +696,31 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void RecordContinuousFrame(
+    double pos, IReadOnlyDictionary<string, float> values)
+    {
+        // Seek-backward truncation: discard frames at or after the current
+        // position. Prevents duplicate/overlapping timestamps after rewind.
+        // (Compare with a small epsilon: playback position from BASS is not
+        //  monotonic at sub-ms level.)
+        const double Eps = 1e-3;
+        while (_continuousFrames.Count > 0
+               && _continuousFrames[^1].TimestampSeconds >= pos - Eps)
+        {
+            _continuousFrames.RemoveAt(_continuousFrames.Count - 1);
+        }
+
+        var arr = new float[ContinuousKeys.Count];
+        for (int i = 0; i < ContinuousKeys.Ordered.Length; i++)
+            arr[i] = values.GetValueOrDefault(ContinuousKeys.Ordered[i], 0f);
+
+        _continuousFrames.Add(new ContinuousFrame
+        {
+            TimestampSeconds = pos,
+            Values = arr,
+        });
+    }
+
     /// <summary>
     /// Загружает .nvproj: восстанавливает аудио, события, правила.
     /// Если аудио из проекта не резолвится — бросает <see cref="AudioNotFoundException"/>,
@@ -724,6 +761,8 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             {
                 _eventKeys.Add((ev.Type, ToTickMs(ev.TimestampSeconds)));
                 Events.Add(EventRow.FromStored(ev));
+                _continuousFrames = new List<ContinuousFrame>(
+                    loaded.Document.Timeline.ContinuousFrames);
             }
 
             // 4. Правила из проекта, если там не пусто.
