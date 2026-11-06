@@ -24,6 +24,14 @@ public sealed class IpcServer : IDisposable
             SingleWriter = false,
         });
 
+    private readonly Channel<ControlMessage> _controlQueue =
+    Channel.CreateBounded<ControlMessage>(new BoundedChannelOptions(16)
+    {
+        FullMode = BoundedChannelFullMode.DropOldest,
+        SingleReader = true,
+        SingleWriter = false,
+    });
+
     private Process? _godotProcess;
     public Process? GodotProcess => _godotProcess;
     private long _seq = 0;
@@ -94,6 +102,35 @@ public sealed class IpcServer : IDisposable
         _outgoingFrames.Writer.TryWrite(frame);
     }
 
+    /// <summary>
+    /// Queues a SetWindowMode command. Delivered on the long-lived Control
+    /// pipe when a Visualizer is connected; buffered if not (next launch
+    /// receives it). Idempotent, non-blocking.
+    /// </summary>
+    public void SendWindowMode(int monitorIndex, bool fullscreen)
+    {
+        var msg = new ControlMessage
+        {
+            Kind = ControlKinds.SetWindowMode,
+            Payload = MessagePackSerializer.Serialize(
+                new SetWindowModePayload { MonitorIndex = monitorIndex, Fullscreen = fullscreen },
+                MessagePackOptions.Default),
+        };
+        _controlQueue.Writer.TryWrite(msg);
+    }
+
+    public void SendAlwaysOnTop(bool enabled)
+    {
+        var msg = new ControlMessage
+        {
+            Kind = ControlKinds.SetAlwaysOnTop,
+            Payload = MessagePackSerializer.Serialize(
+                new SetAlwaysOnTopPayload { Enabled = enabled },
+                MessagePackOptions.Default),
+        };
+        _controlQueue.Writer.TryWrite(msg);
+    }
+
     private async Task AcceptControlPipeAsync()
     {
         while (!_cts.IsCancellationRequested)
@@ -105,25 +142,45 @@ public sealed class IpcServer : IDisposable
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await pipe.WaitForConnectionAsync(_cts.Token);
 
-                var bytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                if (bytes != null)
+                // Handshake: read Hello, send HelloAck.
+                var helloBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
+                if (helloBytes == null) continue;
+                var hello = MessagePackSerializer.Deserialize<ControlMessage>(
+                    helloBytes, MessagePackOptions.Default);
+                if (hello.Kind != ControlKinds.Hello) continue;
+
+                var ack = new ControlMessage
                 {
-                    var msg = MessagePackSerializer.Deserialize<ControlMessage>(bytes, MessagePackOptions.Default);
-                    if (msg.Kind == ControlKinds.Hello)
+                    Kind = ControlKinds.HelloAck,
+                    Payload = MessagePackSerializer.Serialize(
+                        new HelloPayload { ProtocolVersion = IpcConstants.ProtocolVersion },
+                        MessagePackOptions.Default),
+                };
+                await PipeProtocol.WriteFrameAsync(
+                    pipe, MessagePackSerializer.Serialize(ack, MessagePackOptions.Default), _cts.Token);
+
+                // P2-B: keep pipe alive, drain control queue to it. Godot
+                // reads these on its long-lived Control pipe loop.
+                try
+                {
+                    while (pipe.IsConnected && !_cts.IsCancellationRequested)
                     {
-                        var ack = new ControlMessage
+                        if (_controlQueue.Reader.TryRead(out var msg))
                         {
-                            Kind = ControlKinds.HelloAck,
-                            Payload = MessagePackSerializer.Serialize(
-                                new HelloPayload { ProtocolVersion = IpcConstants.ProtocolVersion },
-                                MessagePackOptions.Default)
-                        };
-                        await PipeProtocol.WriteFrameAsync(
-                            pipe, MessagePackSerializer.Serialize(ack, MessagePackOptions.Default), _cts.Token);
+                            await PipeProtocol.WriteFrameAsync(
+                                pipe,
+                                MessagePackSerializer.Serialize(msg, MessagePackOptions.Default),
+                                _cts.Token);
+                        }
+                        else
+                        {
+                            await Task.Delay(50, _cts.Token);
+                        }
                     }
                 }
+                catch { /* client closed pipe — loop re-accepts */ }
             }
-            catch { /* ignore */ }
+            catch { /* accept/handshake failed — loop retries */ }
         }
     }
 
@@ -170,6 +227,7 @@ public sealed class IpcServer : IDisposable
     {
         _cts.Cancel();
         _outgoingFrames.Writer.TryComplete();
+        _controlQueue.Writer.TryComplete();
 
         if (_godotProcess != null && !_godotProcess.HasExited)
         {

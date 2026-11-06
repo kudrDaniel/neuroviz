@@ -15,7 +15,7 @@
                Foreground="#FF8FA6C0" Margin="0,0,0,16" />
 
     <!-- Form -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
           ColumnDefinitions="*,Auto">
 
       <!-- Godot executable -->
@@ -53,6 +53,19 @@
               Click="OnBrowseRules" MinWidth="90" />
       <TextBlock Grid.Row="8" Grid.ColumnSpan="2" x:Name="RulesPathError"
                  Foreground="#FFE05A5A" Margin="0,2,0,0" IsVisible="False" />
+      <!-- Visualizer: monitor + always-on-top (P2-B) -->
+      <TextBlock Grid.Row="9" Grid.ColumnSpan="2"
+                 Text="Visualizer window"
+                 Foreground="#FFE0E0E8" Margin="0,16,0,4" />
+      <TextBlock Grid.Row="10" Grid.Column="0"
+                 Text="Monitor (fullscreen)"
+                 Foreground="#FF8FA6C0" VerticalAlignment="Center" />
+      <ComboBox Grid.Row="10" Grid.Column="1"
+                x:Name="MonitorBox" MinWidth="200" HorizontalAlignment="Left" />
+      <CheckBox Grid.Row="11" Grid.ColumnSpan="2"
+                x:Name="AlwaysOnTopBox"
+                Content="Always on top of other windows"
+                Foreground="#FFE0E0E8" Margin="0,8,0,0" />
 
     </Grid>
 

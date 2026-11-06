@@ -65,35 +65,100 @@ public sealed class IpcClient : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeClientStream(".", IpcConstants.ControlPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                using var pipe = new NamedPipeClientStream(
+                    ".", IpcConstants.ControlPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
                 await pipe.ConnectAsync(2000, _cts.Token);
+
                 var hello = new ControlMessage
                 {
                     Kind = ControlKinds.Hello,
-                    Payload = MessagePackSerializer.Serialize(new HelloPayload { ProtocolVersion = IpcConstants.ProtocolVersion, Role = "visualizer" }, MessagePackOptions.Default)
+                    Payload = MessagePackSerializer.Serialize(
+                        new HelloPayload
+                        {
+                            ProtocolVersion = IpcConstants.ProtocolVersion,
+                            Role = "visualizer",
+                        },
+                        MessagePackOptions.Default),
                 };
-                await PipeProtocol.WriteFrameAsync(pipe, MessagePackSerializer.Serialize(hello, MessagePackOptions.Default), _cts.Token);
+                await PipeProtocol.WriteFrameAsync(
+                    pipe, MessagePackSerializer.Serialize(hello, MessagePackOptions.Default), _cts.Token);
 
-                // Ждем HelloAck
                 var ackBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                if (ackBytes != null)
+                if (ackBytes == null) continue; // server closed before ack
+                var ack = MessagePackSerializer.Deserialize<ControlMessage>(
+                    ackBytes, MessagePackOptions.Default);
+                if (ack.Kind != ControlKinds.HelloAck) continue;
+
+                IsConnected = true;
+                GD.Print("[IPC] Control pipe handshake OK, entering read loop.");
+
+                // P2-B: long-lived read loop. Server sends SetWindowMode /
+                // SetAlwaysOnTop and any future command kinds here.
+                while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
-                    var ack = MessagePackSerializer.Deserialize<ControlMessage>(ackBytes, MessagePackOptions.Default);
-                    if (ack.Kind == ControlKinds.HelloAck)
-                    {
-                        IsConnected = true;
-                        GD.Print("[IPC] Control pipe connected & handshake OK.");
-                        // После handshake Control-пайп можно закрыть (если не нужны другие команды)
-                        return;
-                    }
+                    var cmdBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
+                    if (cmdBytes == null) break;   // server closed pipe
+                    var cmd = MessagePackSerializer.Deserialize<ControlMessage>(
+                        cmdBytes, MessagePackOptions.Default);
+                    HandleControlMessage(cmd);
                 }
+
+                IsConnected = false;
+                GD.Print("[IPC] Control pipe closed, will reconnect.");
             }
+            catch (OperationCanceledException) { /* shutdown */ }
             catch (Exception ex)
             {
                 GD.PrintErr($"[IPC] Control pipe error: {ex.Message}");
                 await Task.Delay(1000, _cts.Token);
             }
         }
+    }
+
+    private void HandleControlMessage(ControlMessage msg)
+    {
+        switch (msg.Kind)
+        {
+            case ControlKinds.SetWindowMode:
+                var mode = MessagePackSerializer.Deserialize<SetWindowModePayload>(
+                    msg.Payload, MessagePackOptions.Default);
+                ApplyWindowMode(mode.MonitorIndex, mode.Fullscreen);
+                break;
+            case ControlKinds.SetAlwaysOnTop:
+                var top = MessagePackSerializer.Deserialize<SetAlwaysOnTopPayload>(
+                    msg.Payload, MessagePackOptions.Default);
+                ApplyAlwaysOnTop(top.Enabled);
+                break;
+            default:
+                GD.Print($"[IPC] Unknown control kind: {msg.Kind}");
+                break;
+        }
+    }
+
+    private static void ApplyWindowMode(int monitorIndex, bool fullscreen)
+    {
+        var screenCount = DisplayServer.GetScreenCount();
+        if (monitorIndex < 0 || monitorIndex >= screenCount) return;
+
+        // Transition through windowed so SetCurrentScreen has an effect when
+        // the window is already fullscreen on a different monitor.
+        var currentMode = DisplayServer.WindowGetMode();
+        if (currentMode == DisplayServer.WindowMode.Fullscreen
+            || currentMode == DisplayServer.WindowMode.ExclusiveFullscreen)
+        {
+            DisplayServer.WindowSetMode(DisplayServer.WindowMode.Windowed);
+        }
+
+        DisplayServer.WindowSetCurrentScreen(monitorIndex);
+
+        if (fullscreen)
+            DisplayServer.WindowSetMode(DisplayServer.WindowMode.Fullscreen);
+    }
+
+    private static void ApplyAlwaysOnTop(bool enabled)
+    {
+        DisplayServer.WindowSetFlag(
+            DisplayServer.WindowFlags.AlwaysOnTop, enabled);
     }
 
     private async Task ListenEventStreamAsync()

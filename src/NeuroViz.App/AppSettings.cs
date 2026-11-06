@@ -26,6 +26,18 @@ public sealed class AppSettings
     /// <summary>Явный путь к JSON-файлу правил. null → встроенный basic.json.</summary>
     public string? RulesPath { get; set; }
 
+    /// <summary>
+    /// Which monitor to place the Visualizer fullscreen on (0-based).
+    /// Applies at Launch; requires a monitor that exists at that moment.
+    /// 0 = primary. Ignored if the index is out of range.
+    /// </summary>
+    public int VisualizerMonitorIndex { get; set; }
+
+    /// <summary>
+    /// Keep the Visualizer window always on top of other windows.
+    /// </summary>
+    public bool VisualizerAlwaysOnTop { get; set; }
+
     public static string DefaultPath =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

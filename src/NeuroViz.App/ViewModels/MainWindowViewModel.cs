@@ -431,6 +431,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         StatusText = $"Visualizer launched (PID {proc.Id})";
+        // P2-B: apply window configuration. Commands are queued in IpcServer
+        // and delivered on the long-lived Control pipe when Godot's IPC client
+        // connects (within ~1 s of launch). Non-blocking.
+        _ipcServer.SendWindowMode(Settings.VisualizerMonitorIndex, fullscreen: true);
+        _ipcServer.SendAlwaysOnTop(Settings.VisualizerAlwaysOnTop);
 
         // Проверяем через 750 мс: если Godot упал, показываем код выхода.
         var captured = proc;

@@ -73,11 +73,31 @@ public partial class SettingsWindow : Window
             RulesPathBox.Text = path;
     }
 
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+
+        var screens = Screens.All;
+        for (int i = 0; i < screens.Count; i++)
+        {
+            var s = screens[i];
+            MonitorBox.Items.Add($"Monitor {i + 1} ({s.Bounds.Width}×{s.Bounds.Height})");
+        }
+
+        var idx = _target.VisualizerMonitorIndex;
+        if (idx < 0 || idx >= screens.Count) idx = 0;
+        if (MonitorBox.ItemCount > 0) MonitorBox.SelectedIndex = idx;
+
+        AlwaysOnTopBox.IsChecked = _target.VisualizerAlwaysOnTop;
+    }
+
     private void OnResetDefaults(object? sender, RoutedEventArgs e)
     {
         GodotExeBox.Text = "";
         GodotProjectBox.Text = "";
         RulesPathBox.Text = "";
+        MonitorBox.SelectedIndex = 0;
+        AlwaysOnTopBox.IsChecked = false;
         HideAllErrors();
     }
 
@@ -104,6 +124,8 @@ public partial class SettingsWindow : Window
         _target.GodotExePath = exePath;
         _target.GodotProjectPath = projectPath;
         _target.RulesPath = rulesPath;
+        _target.VisualizerMonitorIndex = Math.Max(0, MonitorBox.SelectedIndex);
+        _target.VisualizerAlwaysOnTop = AlwaysOnTopBox.IsChecked ?? false;
         _target.Save();
         Close(true);
     }
