@@ -118,6 +118,8 @@ void fragment() {
 
     public override void _Process(double delta)
     {
+        _ipc.DrainMainThreadActions();
+
         if (!_ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting for Avalonia... FPS: {Engine.GetFramesPerSecond():F0}";

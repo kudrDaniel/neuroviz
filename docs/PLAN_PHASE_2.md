@@ -95,6 +95,12 @@ Phase 2. По образцу `PLAN_A1_LOAD_PROJECT.md`: каждая стади�
 
 **Оценка:** 3–4 часа.
 
+**Урок (manual test):** DisplayServer.* — main-thread-only. Фоновые
+чтения Control pipe кладут команды в очередь; `_Process` дренит и
+применяет. Эта же дисциплина обязательна для P2-A (рендер
+preview-кадра из viewport → текстура → PNG — тоже main-thread-only)
+и любых будущих Control-команд.
+
 ---
 
 ### 2.3 — P2-A (preview-thumbnail)

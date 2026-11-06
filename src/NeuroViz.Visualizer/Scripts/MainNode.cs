@@ -77,6 +77,8 @@ public partial class MainNode : Node2D
 
     public override void _Process(double delta)
     {
+        _ipc.DrainMainThreadActions();
+
         if (!_ipc.IsConnected)
         {
             _statusLabel.Text = "Waiting for Avalonia...";

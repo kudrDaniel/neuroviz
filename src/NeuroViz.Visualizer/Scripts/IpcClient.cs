@@ -15,6 +15,7 @@ namespace NeuroViz.Visualizer.Scripts;
 public sealed class IpcClient : IDisposable
 {
     private readonly ConcurrentQueue<EventStreamFrame> _frameQueue = new();
+    private readonly ConcurrentQueue<Action> _pendingMainThreadActions = new();
     private readonly CancellationTokenSource _cts = new();
     private MemoryMappedFile? _mmf;
     private MemoryMappedViewAccessor? _mmfView;   // доступ только через Volatile.Read/Write
@@ -117,21 +118,45 @@ public sealed class IpcClient : IDisposable
 
     private void HandleControlMessage(ControlMessage msg)
     {
+        // DisplayServer.* is main-thread-only in Godot 4. We're on a background
+        // thread here (Task.Run of ConnectControlPipeAsync) — calling it directly
+        // deadlocks the display server and freezes the whole Godot process
+        // (window stops updating, cannot be closed, cannot be focused).
+        // Enqueue an action; the scene drains it in _Process (main thread).
         switch (msg.Kind)
         {
             case ControlKinds.SetWindowMode:
                 var mode = MessagePackSerializer.Deserialize<SetWindowModePayload>(
                     msg.Payload, MessagePackOptions.Default);
-                ApplyWindowMode(mode.MonitorIndex, mode.Fullscreen);
+                _pendingMainThreadActions.Enqueue(
+                    () => ApplyWindowMode(mode.MonitorIndex, mode.Fullscreen));
                 break;
             case ControlKinds.SetAlwaysOnTop:
                 var top = MessagePackSerializer.Deserialize<SetAlwaysOnTopPayload>(
                     msg.Payload, MessagePackOptions.Default);
-                ApplyAlwaysOnTop(top.Enabled);
+                _pendingMainThreadActions.Enqueue(
+                    () => ApplyAlwaysOnTop(top.Enabled));
                 break;
             default:
                 GD.Print($"[IPC] Unknown control kind: {msg.Kind}");
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Drains the main-thread action queue. Call from _Process (main thread)
+    /// once per frame. Any Godot API called from HandleControlMessage must
+    /// pass through here — see comment in HandleControlMessage.
+    /// </summary>
+    public void DrainMainThreadActions()
+    {
+        while (_pendingMainThreadActions.TryDequeue(out var action))
+        {
+            try { action(); }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[IPC] Deferred control action failed: {ex.Message}");
+            }
         }
     }
 
