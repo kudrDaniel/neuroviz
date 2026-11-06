@@ -136,6 +136,27 @@ Phase 2.5 заменит на `SubViewport` с рендером в 320×180 на
 
 ### 2.4 — P2-C full
 
+### Подэтапы 2.4
+
+| Подэтап | Что | Оценка |
+|---|---|---|
+| **2.4a** | Шипы: simplex-noise displacement + `pulse` event | 3–4 дня |
+| **2.4b** | Idle-камера (медленный orbit) | ½ дня |
+| **2.4c** | Частицы: `band_energy.mid` density + `spectral_flux` emission | 3–5 дней |
+| **2.4d** | Частицы: `pan_x` орбита + `stream_boundary` смена траектории | 3–5 дней |
+| **2.4e** | Palette: `shiver`/`novelty`/`pitch`/`band_energy.high` | 2–3 дня |
+| **2.4f** | Polish: настройки в `settings.json`, TUNING.md | 2–3 дня |
+
+**Порядок:** 2.4a → 2.4e → 2.4c → 2.4d → 2.4b → 2.4f.
+Palette (2.4e) рано — дешёвый, сильно меняет «ощущение», помогает
+оценивать остальное. Idle-камера (2.4b) после частиц — с камерой
+без частиц скучно, с частицами «живая».
+
+**O1, O2, O3:** решены.
+- O1: `harmonicity → spikiness` (semantic: tone=smooth, noise=sharp).
+- O2: `band_energy.mid → particle density`; `spectral_flux → emission bursts`.
+- O3: `stream_boundary open=0` → возврат к idle-траектории; `open=1` → следующая из 3 вариантов по циклу.
+
 **Цель:** сцена, которую не стыдно показать.
 
 **Содержание (по компонентам):**

@@ -1,19 +1,6 @@
 using Godot;
 using NeuroViz.Visualizer.Scripts;
 
-/// <summary>
-/// Phase 2 spike — proof that Godot 3D + our IPC continuous pipeline
-/// works end to end. Not production. Kill switch per PLAN_PHASE_2.md §2.1:
-///   1. 60 FPS @ 1920x1080 while receiving continuous @ 20 Hz.
-///   2. band_energy.low → displacement is smooth, no jitter.
-///   3. Looks like "a 3D visualizer prototype", not "a test cube".
-///
-/// Everything is built in code (no editor-authored scene tree beyond
-/// the root node). Spike deliberately keeps the surface area small —
-/// one mesh, one shader, one light, one camera, one label. The full
-/// P2-C (spikes, particles, stream_boundary trajectories) comes later
-/// and lives in a separate scene, not here.
-/// </summary>
 public partial class MainNode3D : Node3D
 {
     private IpcClient _ipc = null!;
@@ -22,43 +9,35 @@ public partial class MainNode3D : Node3D
     private Label _fpsLabel = null!;
 
     private float _contLow;
+    private float _contHarmonicity;
     private float _smoothLow;
+    private float _smoothHarmonicity;
+    private ParamValueRef _pulseState = new();
     private double _lastClock;
+    private double _visualTime;
+
+    private bool _previewFirstCaptureLogged;
 
     public override void _Ready()
     {
-        // ── Sphere ──────────────────────────────────────────────────
-        // High enough resolution that vertex displacement reads as
-        // smooth surface curvature, not faceting. 64x32 = 2048 verts.
+        // ── Sphere ─────────────────────────────────────────────────
+        // Higher resolution than spike (was 64x32 = 2048 verts) — needed
+        // so vertex-level noise reads as smooth curvature, not facets.
+        // 96x48 = 4608 verts, still trivial for a single sphere.
         var mesh = new SphereMesh
         {
             Radius = 0.5f,
             Height = 1.0f,
-            RadialSegments = 64,
-            Rings = 32,
+            RadialSegments = 96,
+            Rings = 48,
         };
 
-        var shader = new Shader
+        var shader = GD.Load<Shader>("res://spike_sharp.gdshader");
+        if (shader == null)
         {
-            Code = @"
-shader_type spatial;
-
-uniform float displacement : hint_range(0.0, 1.0) = 0.0;
-
-void vertex() {
-    // Push vertices along their normal — breathing sphere.
-    VERTEX += NORMAL * displacement * 0.3;
-}
-
-void fragment() {
-    ALBEDO = vec3(0.2, 0.5, 0.9);
-    // Emission scales with displacement so the effect reads even at
-    // a distance / small screen size. Cheap way to make it obvious
-    // that band_energy.low is doing something.
-    EMISSION = vec3(0.1, 0.2, 0.4) * (0.3 + displacement);
-}
-"
-        };
+            GD.PrintErr("[MainNode3D] Could not load res://spike_sharp.gdshader");
+            return;
+        }
         _material = new ShaderMaterial { Shader = shader };
 
         _sphere = new MeshInstance3D
@@ -69,26 +48,28 @@ void fragment() {
         AddChild(_sphere);
 
         // ── Camera ─────────────────────────────────────────────────
-        // Static for spike. Idle orbit is P2-C full (§2.4).
-        var camera = new Camera3D
-        {
-            Position = new Vector3(0, 0, 2.5f),
-        };
+        // Static; idle orbit is 2.4b.
+        var camera = new Camera3D { Position = new Vector3(0, 0, 2.5f) };
         AddChild(camera);
         camera.LookAt(Vector3.Zero);
 
         // ── Light ──────────────────────────────────────────────────
-        // One directional light is enough to read the silhouette;
-        // the sphere's own emission carries the mood.
-        var light = new DirectionalLight3D
+        // Directional light with shadows. Displaced spikes cast into the
+        // shadow map (Godot's shadow depth pass runs the vertex shader), so
+        // spikes shadow the sphere and each other. Bias tuned for displaced
+        // geometry — default 0.1 caused acne on 0.35-amplitude spikes.
+        AddChild(new DirectionalLight3D
         {
             Rotation = new Vector3(-0.5f, 0.7f, 0),
-            LightEnergy = 1.0f,
-        };
-        AddChild(light);
+            LightEnergy = 1.2f,
+            ShadowEnabled = true,
+            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
+            DirectionalShadowMaxDistance = 5.0f,
+            ShadowBias = 0.04f,
+            ShadowNormalBias = 1.5f,
+        });
 
         // ── Environment ────────────────────────────────────────────
-        // Dark background so emission is legible.
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Color,
@@ -99,19 +80,9 @@ void fragment() {
         };
         AddChild(new WorldEnvironment { Environment = env });
 
-        // ── FPS / diagnostics label ────────────────────────────────
-        // Kill-switch criterion #1 is "stable 60 FPS" — must be
-        // observable without a profiler. This label is spike-only.
-        _fpsLabel = new Label
-        {
-            Position = new Vector2(10, 10),
-            Text = "Waiting for Avalonia...",
-        };
+        _fpsLabel = new Label { Position = new Vector2(10, 10), Text = "Waiting..." };
         AddChild(_fpsLabel);
 
-        // ── IPC ────────────────────────────────────────────────────
-        // Reuse the existing 2D client unchanged. It already handles
-        // Control pipe handshake, EventStream pipe, MMF audio clock.
         _ipc = new IpcClient();
         _ipc.Start();
     }
@@ -122,7 +93,7 @@ void fragment() {
 
         if (!_ipc.IsConnected)
         {
-            _fpsLabel.Text = $"Waiting for Avalonia... FPS: {Engine.GetFramesPerSecond():F0}";
+            _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
             return;
         }
 
@@ -132,59 +103,58 @@ void fragment() {
         {
             _lastClock = frame.AudioClockSeconds;
             contCount = frame.ContinuousParams.Count;
+
             if (frame.ContinuousParams.TryGetValue("band_energy.low", out var bl))
                 _contLow = bl;
+            if (frame.ContinuousParams.TryGetValue("harmonicity", out var h))
+                _contHarmonicity = h;
+            if (frame.Params.TryGetValue("pulse", out var p))
+                _pulseState = new ParamValueRef { Value = p };
         }
 
-        // Same smoothing constant as 2D MainNode (§2.1 criterion #2:
-        // "no worse than kb in 2D"). τ ≈ 83 ms.
+        // Same smoothing as 2D MainNode for band_energy (kb, τ ≈ 83 ms).
+        // Harmonicity also k b — spikiness should lag behind attacks
+        // slightly so it feels organic, not twitchy.
         float kb = 1f - Mathf.Exp(-12f * (float)delta);
         _smoothLow = Mathf.Lerp(_smoothLow, _contLow, kb);
+        _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kb);
+
+        // Pulse decays via EvaluateAt on the audio clock — same source
+        // of truth as 2D scene, so a seek / pause behaves identically.
+        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        float currentPulse = _pulseState.EvaluateAt(nowClock);
+        // Visual time advances regardless of audio state — spikes keep
+        // drifting on pause. Independent of audio clock so seek does not
+        // "rewind" the noise field (would be jarring).
+        _visualTime += delta;
+        _material.SetShaderParameter("time", (float)_visualTime);
+
+        // Spikiness: harmonicity 1 (pure tone) → 0 (smooth),
+        //            harmonicity 0 (noise)     → 1 (sharp spikes).
+        float spikiness = 1f - _smoothHarmonicity;
 
         _material.SetShaderParameter("displacement", _smoothLow);
+        _material.SetShaderParameter("pulse", currentPulse);
+        _material.SetShaderParameter("spikiness", spikiness);
 
-        // Kill switch diagnostics: FPS + the raw and smoothed low-band
-        // value + how many continuous keys arrived in the last frame.
-        // If Cont stays at 0 during playback, the pipeline is not
-        // delivering — spike fails functionally regardless of FPS.
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
-            $"low: {_smoothLow:F3} (raw {_contLow:F3}) | " +
-            $"Cont: {contCount} | Clock: {_lastClock:F2}s";
+            $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | " +
+            $"spk: {spikiness:F2} | pulse: {currentPulse:F2} | Cont: {contCount}";
 
-        // P2-A: preview capture. Gates on _previewConnected inside
-        // ShouldCapturePreview, so no GPU→CPU round-trip when nobody's
-        // listening. Resize is on main thread (Image API); PNG encode and
-        // pipe write are off-thread in IpcClient.QueuePreview.
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))
             CapturePreviewAfterDraw();
     }
 
-    private bool _previewFirstCaptureLogged;
-
     private async void CapturePreviewAfterDraw()
     {
-        // GetTexture().GetImage() called from _Process reads the viewport
-        // before the current frame is drawn by the GPU — in GL compatibility
-        // mode this returns black reliably. Defer to FramePostDraw: by that
-        // signal the GPU has finished writing to the viewport texture and
-        // GetImage() returns real pixels.
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-
-        // Window may have been closed while awaiting.
         if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
 
         var img = GetViewport().GetTexture().GetImage();
-        if (img == null || img.IsEmpty())
-        {
-            GD.PrintErr("[Preview] GetImage returned null/empty");
-            return;
-        }
+        if (img == null || img.IsEmpty()) return;
 
-        // One-shot diagnostic: sample a sparse grid for any non-black pixel.
-        // If this logs non-black=0, capture is broken beyond the timing fix
-        // (likely renderer/driver); tell us and we switch to Forward+.
         if (!_previewFirstCaptureLogged)
         {
             _previewFirstCaptureLogged = true;
@@ -195,7 +165,7 @@ void fragment() {
                     var c = img.GetPixel(x, y);
                     if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
                 }
-            GD.Print($"[Preview] First capture {img.GetWidth()}x{img.GetHeight()}, non-black samples: {nonBlack}");
+            GD.Print($"[Preview] First capture {img.GetWidth()}x{img.GetHeight()}, non-black: {nonBlack}");
         }
 
         img.Resize(320, 180, Image.Interpolation.Bilinear);
@@ -203,8 +173,26 @@ void fragment() {
         img.Dispose();
     }
 
-    public override void _ExitTree()
+    public override void _ExitTree() => _ipc.Dispose();
+
+    // ── Pulse state helper ──────────────────────────────────────────
+    // ParamValue is NeuroViz.Core.Ipc.ParamValue (MessagePack object,
+    // init-only). It's reused here for the same decay semantics as the
+    // 2D scene; the wrapper keeps MainNode3D free of `_pulseState = p`
+    // and a nullable field.
+    private sealed class ParamValueRef
     {
-        _ipc.Dispose();
+        public NeuroViz.Core.Ipc.ParamValue? Value { get; init; }
+
+        public float EvaluateAt(double nowSeconds)
+        {
+            if (Value is null) return 0f;
+
+            if (Value.DecayMs <= 0) return Value.Value;
+            var age = nowSeconds - Value.SetAtSeconds;
+            if (age < 0) return 0f;
+            var k = (float)System.Math.Exp(-age / (Value.DecayMs / 1000.0));
+            return Value.Value * k;
+        }
     }
 }
