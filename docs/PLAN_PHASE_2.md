@@ -199,6 +199,12 @@ JSON-изменений нет. Детали тюнинга — в `TUNING.md §
 в `MainNode3D.SetupAmbientParticles` / `SetupBurstParticles` /
 `_Process`; детали — в `TUNING.md §«3D-частицы»`.
 
+**2.4d реализовано:** `pan_x → смещение эмиттера` (0.5 amplitude),
+`stream_boundary → cycle Fast/Reverse/Idle`. Reverse использует
+отрицательный OrbitVelocity (если Godot 4.7 не поддерживает —
+fallback slow-positive + large-scale, документировано в TUNING.md).
+Переход плавный по природе (5 s lifetime → эволюция, не рывок).
+
 ---
 
 ### 2.5 — Polish

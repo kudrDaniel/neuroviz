@@ -26,6 +26,15 @@ public partial class MainNode3D : Node3D
 
     private GpuParticles3D _ambientParticles = null!;
     private GpuParticles3D _burstParticles = null!;
+
+    private ParticleProcessMaterial _ambientPM = null!;
+    private ParamValueRef _panState = new();
+    private float _smoothPan;
+
+    private enum TrajectoryVariant { Idle = 0, Fast = 1, Reverse = 2 }
+    private TrajectoryVariant _currentTrajectory = TrajectoryVariant.Idle;
+    private TrajectoryVariant _lastNonIdleTrajectory = TrajectoryVariant.Fast;
+
     private double _lastClock;
     private double _visualTime;
 
@@ -138,7 +147,29 @@ public partial class MainNode3D : Node3D
                 _cortexFlashState = new ParamValueRef { Value = cf };
             if (frame.Params.TryGetValue("pitch_height", out var ph))
                 _pitchState = new ParamValueRef { Value = ph };
+            if (frame.Params.TryGetValue("pan_x", out var px))
+                _panState = new ParamValueRef { Value = px };
+
+            // Trajectory events: stream_boundary is an AudioEvent (Type + Params),
+            // not a param-value. frame.Events contains events emitted since the
+            // last drain, so an open/close fires exactly once per transition.
+            // On replay (LoadProject) the event is delivered from the timeline
+            // window; seeking back-and-forth re-fires it, which is fine — the
+            // trajectory follows what the track does.
+            foreach (var ev in frame.Events)
+            {
+                if (ev.Type != "stream_boundary") continue;
+                var isOpen = ev.Params.GetValueOrDefault("open", 0f) >= 0.5f;
+                if (isOpen) AdvanceTrajectoryVariant();
+                else { _currentTrajectory = TrajectoryVariant.Idle; ApplyTrajectory(); }
+            }
         }
+        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        float currentPulse = _pulseState.EvaluateAt(nowClock);
+        float currentShiver = _shiverState.EvaluateAt(nowClock);
+        float currentFlash = _cortexFlashState.EvaluateAt(nowClock);
+        float currentPitch = _pitchState.EvaluateAt(nowClock);
+        float currentPan = _panState.EvaluateAt(nowClock);
 
         // Same smoothing as 2D MainNode for band_energy (kb, τ ≈ 83 ms).
         // Harmonicity also k b — spikiness should lag behind attacks
@@ -152,11 +183,8 @@ public partial class MainNode3D : Node3D
         float kf = 1f - Mathf.Exp(-30f * (float)delta);
         _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
 
-        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
-        float currentPulse = _pulseState.EvaluateAt(nowClock);
-        float currentShiver = _shiverState.EvaluateAt(nowClock);
-        float currentFlash = _cortexFlashState.EvaluateAt(nowClock);
-        float currentPitch = _pitchState.EvaluateAt(nowClock);
+        float kc = 1f - Mathf.Exp(-15f * (float)delta);   // τ ≈ 67 ms
+        _smoothPan = Mathf.Lerp(_smoothPan, currentPan, kc);
         // Visual time advances regardless of audio state — spikes keep
         // drifting on pause. Independent of audio clock so seek does not
         // "rewind" the noise field (would be jarring).
@@ -188,6 +216,14 @@ public partial class MainNode3D : Node3D
             _lastBurstSeconds = nowClock;
         }
 
+        // Pan offset: shift both emitters horizontally by the smoothed pan.
+        // Setting Position on the emitter moves ALL particles (already-spawned
+        // and future) — the whole cloud slides sideways while the sphere stays
+        // centred. 0.5 amplitude keeps pan inside the VisibilityAabb.
+        var panOffset = new Vector3(_smoothPan * 0.5f, 0, 0);
+        _ambientParticles.Position = panOffset;
+        _burstParticles.Position = panOffset;
+
         float spikiness = 1f - _smoothHarmonicity;
         _material.SetShaderParameter("spikiness", spikiness);
 
@@ -195,7 +231,8 @@ public partial class MainNode3D : Node3D
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | high: {_smoothHigh:F3} | Cont: {contCount}\n" +
             $"pulse: {currentPulse:F2} | shiver: {currentShiver:F2} | flash: {currentFlash:F2} | " +
-            $"mid: {_smoothMid:F2} | flux: {_smoothFlux:F2} | parts: {_ambientParticles.AmountRatio:F2}";
+            $"mid: {_smoothMid:F2} | flux: {_smoothFlux:F2} | pan: {_smoothPan:F2} | " +
+            $"traj: {_currentTrajectory} | parts: {_ambientParticles.AmountRatio:F2}";
 
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))
@@ -262,6 +299,7 @@ public partial class MainNode3D : Node3D
             OrbitVelocityMin = 0.1f,
             OrbitVelocityMax = 0.3f,
         };
+        _ambientPM = pm;
 
         _ambientParticles = new GpuParticles3D   // GpuParticles3D, not GPUParticles3D
         {
@@ -335,6 +373,56 @@ public partial class MainNode3D : Node3D
         g.SetColor(0, new Color(1.0f, 1.0f, 1.0f, 1.0f));
         g.SetColor(1, new Color(0.5f, 0.7f, 1.0f, 0.0f));
         return new GradientTexture1D { Gradient = g };
+    }
+
+    private void AdvanceTrajectoryVariant()
+    {
+        // Cycle non-idle variants on each open. Idle is the default at
+        // start and returns on close; open skips over it.
+        _currentTrajectory = _lastNonIdleTrajectory == TrajectoryVariant.Fast
+            ? TrajectoryVariant.Reverse
+            : TrajectoryVariant.Fast;
+        _lastNonIdleTrajectory = _currentTrajectory;
+        ApplyTrajectory();
+    }
+
+    private void ApplyTrajectory()
+    {
+        switch (_currentTrajectory)
+        {
+            case TrajectoryVariant.Fast:
+                _ambientPM.OrbitVelocityMin = 0.5f;
+                _ambientPM.OrbitVelocityMax = 0.8f;
+                _ambientPM.EmissionSphereRadius = 1.5f;
+                _ambientPM.ScaleMin = 0.4f;
+                _ambientPM.ScaleMax = 1.2f;
+                break;
+            case TrajectoryVariant.Reverse:
+                // Negative OrbitVelocity — Godot 4 does not document a
+                // restriction and the field is a float velocity, so reversed
+                // direction is the natural reading. If a future Godot version
+                // rejects it, swap to a slow-positive variant with larger
+                // scale (Orbit 0.05-0.1, Scale 0.8-2.0) — the visual intent
+                // is "different character", not specifically "backwards".
+                _ambientPM.OrbitVelocityMin = -0.4f;
+                _ambientPM.OrbitVelocityMax = -0.2f;
+                _ambientPM.EmissionSphereRadius = 1.3f;
+                _ambientPM.ScaleMin = 0.6f;
+                _ambientPM.ScaleMax = 1.8f;
+                break;
+            default: // Idle
+                _ambientPM.OrbitVelocityMin = 0.1f;
+                _ambientPM.OrbitVelocityMax = 0.3f;
+                _ambientPM.EmissionSphereRadius = 1.3f;
+                _ambientPM.ScaleMin = 0.5f;
+                _ambientPM.ScaleMax = 1.5f;
+                break;
+        }
+        // Changing material params affects only NEW spawns — existing
+        // particles keep their spawn radius/scale/velocity. With 5 s
+        // lifetime the transition reads as a slow, organic drift, not a
+        // cut. This is intentional: trajectory changes should not feel
+        // like flipping a switch.
     }
 
     public override void _ExitTree() => _ipc.Dispose();
