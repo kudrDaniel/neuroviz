@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
@@ -16,6 +17,16 @@ public sealed class IpcClient : IDisposable
 {
     private readonly ConcurrentQueue<EventStreamFrame> _frameQueue = new();
     private readonly ConcurrentQueue<Action> _pendingMainThreadActions = new();
+    private readonly Channel<PreviewFrame> _previewQueue =
+    Channel.CreateBounded<PreviewFrame>(new BoundedChannelOptions(8)
+    {
+        FullMode = BoundedChannelFullMode.DropOldest,
+        SingleReader = true,
+        SingleWriter = true,   // main thread only
+    });
+    private long _previewSeq;
+    private double _lastPreviewCaptureSeconds = -1.0;
+    private volatile bool _previewConnected;
     private readonly CancellationTokenSource _cts = new();
     private MemoryMappedFile? _mmf;
     private MemoryMappedViewAccessor? _mmfView;   // доступ только через Volatile.Read/Write
@@ -27,7 +38,8 @@ public sealed class IpcClient : IDisposable
     {
         _ = Task.Run(ConnectControlPipeAsync);
         _ = Task.Run(ListenEventStreamAsync);
-        _ = Task.Run(OpenAudioClockAsync);   // было OpenAudioClock
+        _ = Task.Run(OpenAudioClockAsync);
+        _ = Task.Run(ServePreviewPipeAsync);
     }
 
     /// <summary>
@@ -44,6 +56,45 @@ public sealed class IpcClient : IDisposable
             return ticks / 1_000_000_000.0;
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// True when the App-side inspector is connected to the preview pipe.
+    /// MainNode/_Process should only capture when this is true — capture is
+    /// a GPU→CPU round-trip (expensive at viewport resolution) and is pure
+    /// waste if nobody is listening.
+    /// </summary>
+    public bool IsPreviewConnected => _previewConnected;
+
+    /// <summary>
+    /// Rate-limits capture to 5 fps. Called on main thread once per _Process.
+    /// Returns true → caller should do the viewport capture and call
+    /// <see cref="QueuePreview"/>.
+    /// </summary>
+    public bool ShouldCapturePreview(double nowSeconds)
+    {
+        if (!_previewConnected) return false;
+        if (nowSeconds - _lastPreviewCaptureSeconds < 0.2) return false;
+        _lastPreviewCaptureSeconds = nowSeconds;
+        return true;
+    }
+
+    /// <summary>
+    /// Enqueues a captured and resized image for the preview writer. Resizing
+    /// must be done on the main thread (Image API); only the PNG encode and
+    /// pipe write happen off-thread.
+    /// </summary>
+    public void QueuePreview(Image image)
+    {
+        var png = image.SavePngToBuffer();
+        var frame = new PreviewFrame
+        {
+            FrameSeq = Interlocked.Increment(ref _previewSeq),
+            Width = image.GetWidth(),
+            Height = image.GetHeight(),
+            PngBytes = png,
+        };
+        _previewQueue.Writer.TryWrite(frame);
     }
 
     public EventStreamFrame? GetLatestFrame()
@@ -208,6 +259,55 @@ public sealed class IpcClient : IDisposable
             {
                 GD.PrintErr($"[IPC] EventStream error: {ex.Message}");
                 await Task.Delay(1000, _cts.Token);
+            }
+        }
+    }
+
+    private async Task ServePreviewPipeAsync()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                using var pipe = new NamedPipeServerStream(
+                    IpcConstants.PreviewPipeName,
+                    PipeDirection.Out, 1, PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous);
+                await pipe.WaitForConnectionAsync(_cts.Token);
+                GD.Print("[IPC] Preview pipe connected.");
+                _previewConnected = true;
+
+                // Drop any stale frames buffered while disconnected.
+                while (_previewQueue.Reader.TryRead(out _)) { }
+
+                try
+                {
+                    while (pipe.IsConnected && !_cts.IsCancellationRequested)
+                    {
+                        if (_previewQueue.Reader.TryRead(out var frame))
+                        {
+                            var bytes = MessagePackSerializer.Serialize(
+                                frame, MessagePackOptions.Default);
+                            await PipeProtocol.WriteFrameAsync(pipe, bytes, _cts.Token);
+                        }
+                        else
+                        {
+                            await Task.Delay(20, _cts.Token);   // 50 Hz drain
+                        }
+                    }
+                }
+                finally
+                {
+                    _previewConnected = false;
+                }
+                GD.Print("[IPC] Preview pipe closed, waiting for reconnect.");
+            }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch (Exception ex)
+            {
+                _previewConnected = false;
+                GD.PrintErr($"[IPC] Preview pipe error: {ex.Message}");
+                try { await Task.Delay(1000, _cts.Token); } catch { }
             }
         }
     }

@@ -61,4 +61,24 @@ public class IpcRoundTripTests
         Assert.NotNull(back.ContinuousParams);
         Assert.Empty(back.ContinuousParams);
     }
+
+    [Fact]
+    public void PreviewFrame_RoundTrip()
+    {
+        var frame = new PreviewFrame
+        {
+            FrameSeq = 42,
+            Width = 320,
+            Height = 180,
+            PngBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 },   // PNG magic
+        };
+        var bytes = MessagePack.MessagePackSerializer.Serialize(frame, MessagePackOptions.Default);
+        var back = MessagePack.MessagePackSerializer.Deserialize<PreviewFrame>(bytes, MessagePackOptions.Default);
+
+        Assert.Equal(42, back.FrameSeq);
+        Assert.Equal(320, back.Width);
+        Assert.Equal(180, back.Height);
+        Assert.Equal(4, back.PngBytes.Length);
+        Assert.Equal(0x89, back.PngBytes[0]);
+    }
 }

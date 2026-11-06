@@ -120,6 +120,18 @@ preview-кадра из viewport → текстура → PNG — тоже main-
 
 **Оценка:** 1 день.
 
+**Статус: реализовано.** Preview-thumbnail 320×180 @ 5 fps,
+`NeuroViz.Preview` pipe (Godot = server, App = client).
+`ProtocolVersion` 3→4. Захват через `GetViewport().GetTexture().GetImage()`
++ `Resize(320, 180)` на main thread; PNG encode + pipe write off-thread.
+Rate-limit — `IpcClient.ShouldCapturePreview` (гейт по `IsPreviewConnected`,
+не жжём CPU если инспектор не слушает).
+
+**Известная цена:** `GetImage()` — GPU→CPU round-trip на viewport-
+разрешении (~8 МБ на 1920×1080 кадр). При 5 fps = ~40 МБ/с аллокаций,
+видимый GC churn. Для MVP приемлемо; если профайлер покажет jitter —
+Phase 2.5 заменит на `SubViewport` с рендером в 320×180 напрямую.
+
 ---
 
 ### 2.4 — P2-C full

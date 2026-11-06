@@ -98,5 +98,18 @@
         </DataGridTemplateColumn>
       </DataGrid.Columns>
     </DataGrid>
+    <!-- P2-A: preview-thumbnail from Visualizer, bottom-right overlay. -->
+    <Border Grid.Row="0" Grid.RowSpan="6"
+            HorizontalAlignment="Right" VerticalAlignment="Bottom"
+            Margin="0,0,8,8"
+            Background="#CC000000"
+            BorderBrush="#FF2A2A34" BorderThickness="1"
+            Padding="2"
+            IsVisible="{Binding HasPreview}"
+            ZIndex="100">
+      <Image Source="{Binding PreviewBitmap}"
+             Width="320" Height="180"
+             Stretch="Uniform"/>
+    </Border>
   </Grid>
 </Window>

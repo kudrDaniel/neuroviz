@@ -37,6 +37,12 @@ public sealed class IpcServer : IDisposable
     private long _seq = 0;
     private volatile bool _eventStreamConnected;
 
+    /// <summary>
+    /// Fires on the thread that drains the Preview pipe (background). Callers
+    /// are responsible for marshalling to the UI thread (Dispatcher.UIThread.Post).
+    /// </summary>
+    public event Action<PreviewFrame>? PreviewReceived;
+
     public void LaunchGodot(string godotExePath, string projectPath)
     {
         // Defense-in-depth: trailing separator перед закрывающей кавычкой
@@ -77,6 +83,7 @@ public sealed class IpcServer : IDisposable
 
         _ = Task.Run(AcceptControlPipeAsync);
         _ = Task.Run(AcceptEventStreamAsync);
+        _ = Task.Run(AcceptPreviewAsync);
     }
 
     public void PushFrame(
@@ -220,6 +227,39 @@ public sealed class IpcServer : IDisposable
                 }
             }
             catch { /* ignore */ }
+        }
+    }
+
+    private async Task AcceptPreviewAsync()
+    {
+        while (!_cts.IsCancellationRequested)
+        {
+            try
+            {
+                // Client: Godot is the server for this pipe (reverse of
+                // Control/EventStream). Retry with timeout so App startup
+                // before Godot launch does not park a thread forever.
+                using var pipe = new NamedPipeClientStream(
+                    ".", IpcConstants.PreviewPipeName,
+                    PipeDirection.In, PipeOptions.Asynchronous);
+                await pipe.ConnectAsync(2000, _cts.Token);
+                Debug.WriteLine("[IPC] Preview pipe connected.");
+
+                while (pipe.IsConnected && !_cts.IsCancellationRequested)
+                {
+                    var bytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
+                    if (bytes == null) break;   // Godot closed pipe
+                    var frame = MessagePackSerializer.Deserialize<PreviewFrame>(
+                        bytes, MessagePackOptions.Default);
+                    PreviewReceived?.Invoke(frame);
+                }
+            }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch
+            {
+                // Godot not running yet, or restarting — retry at 1 Hz.
+                try { await Task.Delay(1000, _cts.Token); } catch { }
+            }
         }
     }
 

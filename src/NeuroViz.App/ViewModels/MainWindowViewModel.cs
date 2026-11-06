@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
+using System.Drawing;
 using Avalonia;
 using Avalonia.Input.Platform;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -78,6 +79,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _waveformPeaks, value);
     }
 
+    private Bitmap? _previewBitmap;
+    public Bitmap? PreviewBitmap
+    {
+        get => _previewBitmap;
+        set
+        {
+            if (SetProperty(ref _previewBitmap, value))
+                OnPropertyChanged(nameof(HasPreview));
+        }
+    }
+
+    public bool HasPreview => _previewBitmap is not null;
+
     private double _position;
     public double Position
     {
@@ -134,6 +148,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _timer.Start();
 
         _ipcServer = new IpcServer();
+        _ipcServer.PreviewReceived += OnPreviewReceived;
 
         var rulesPath = ResolveRulesPath();
         RulesDocument rulesDoc;
@@ -257,6 +272,31 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         _ipcServer.PushFrame(currentPos, eventsToSend, paramValues, continuousParams);
         _lastTickPosition = currentPos;
+    }
+
+    private void OnPreviewReceived(PreviewFrame frame)
+    {
+        // Handler runs on the pipe-drain background thread. Bitmap ctor is
+        // safe there, but property assignment must be on the UI thread
+        // (Avalonia binding observes from UI thread); doing both together
+        // is simpler than splitting, and 5 fps is trivial load.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_disposed) return;
+            try
+            {
+                using var ms = new MemoryStream(frame.PngBytes);
+                var bmp = new Bitmap(ms);
+                var old = _previewBitmap;
+                PreviewBitmap = bmp;
+                old?.Dispose();
+            }
+            catch
+            {
+                // Corrupt PNG (partial read, provider glitch) — ignore this
+                // frame, keep the previous one. Next frame at 5 fps.
+            }
+        });
     }
 
     private AnalyzerPipeline CreateAnalyzerPipeline()
@@ -831,6 +871,9 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _pipeline?.Dispose();
         _player.Dispose();
         _clock.Dispose();
+        PreviewBitmap?.Dispose();
+        PreviewBitmap = null;
+        _ipcServer.PreviewReceived -= OnPreviewReceived;
         _ipcServer.Dispose();
         BassBootstrap.Shutdown();       // ← последним: фри'ит глобальный BASS state
 

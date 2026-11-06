@@ -151,6 +151,22 @@ void fragment() {
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"low: {_smoothLow:F3} (raw {_contLow:F3}) | " +
             $"Cont: {contCount} | Clock: {_lastClock:F2}s";
+
+        // P2-A: preview capture. Gates on _previewConnected inside
+        // ShouldCapturePreview, so no GPU→CPU round-trip when nobody's
+        // listening. Resize is on main thread (Image API); PNG encode and
+        // pipe write are off-thread in IpcClient.QueuePreview.
+        double now = Time.GetTicksMsec() / 1000.0;
+        if (_ipc.ShouldCapturePreview(now))
+        {
+            var img = GetViewport().GetTexture().GetImage();
+            if (img != null)
+            {
+                img.Resize(320, 180, Image.Interpolation.Bilinear);
+                _ipc.QueuePreview(img);
+                img.Dispose();
+            }
+        }
     }
 
     public override void _ExitTree()

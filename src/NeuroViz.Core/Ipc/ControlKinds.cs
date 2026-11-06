@@ -19,11 +19,14 @@ public static class ControlKinds
 
 public static class IpcConstants
 {
-    // Bumped 1→2 in B2: added EventStreamFrame.ContinuousParams ([Key(4)]).
-    // Wire-compatible at MessagePack level (unknown keys are ignored both
-    // directions), but semantically the protocol gained a new channel.
-    public const int ProtocolVersion = 3;
+    // Bumped 3→4 in P2-A: NeuroViz.Preview pipe (Godot→App) carries PNG
+    // thumbnails. Non-breaking in practice: old App does not connect
+    // (Godot-side server parks on WaitForConnectionAsync, no cost); old
+    // Godot does not serve (App-side client retries once/sec, preview
+    // stays null).
+    public const int ProtocolVersion = 4;
     public const string ControlPipeName = "NeuroViz.Control";
     public const string EventStreamPipeName = "NeuroViz.EventStream";
     public const string AudioClockMapName = "NeuroViz.AudioClock";
+    public const string PreviewPipeName = "NeuroViz.Preview";
 }

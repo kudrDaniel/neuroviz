@@ -217,6 +217,19 @@ public partial class MainNode : Node2D
         _contRect.Scale = new Vector2(contScale, contScale);
         _contRect.Color = new Color(1.0f, 0.5f, 0.2f, 0.7f)
             .Lerp(new Color(0.2f, 1.0f, 0.5f, 0.9f), _smoothHarmonicity);
+
+        // P2-A: preview capture (works in 2D too — same rules).
+        double now = Time.GetTicksMsec() / 1000.0;
+        if (_ipc.ShouldCapturePreview(now))
+        {
+            var img = GetViewport().GetTexture().GetImage();
+            if (img != null)
+            {
+                img.Resize(320, 180, Image.Interpolation.Bilinear);
+                _ipc.QueuePreview(img);
+                img.Dispose();
+            }
+        }
     }
 
     public override void _ExitTree()
