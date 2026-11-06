@@ -230,7 +230,7 @@ public partial class MainNode3D : Node3D
 
     private void SetupAmbientParticles()
     {
-        var quad = new QuadMesh { Size = new Vector2(0.025f, 0.025f) };
+        var quad = new QuadMesh { Size = new Vector2(0.03f, 0.03f) };   // 0.025 → 0.03
 
         var mat = new StandardMaterial3D
         {
@@ -244,7 +244,10 @@ public partial class MainNode3D : Node3D
         var pm = new ParticleProcessMaterial
         {
             EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
-            EmissionSphereRadius = 0.7f,
+            // 1.3 > max sphere radius (0.5 base + 0.15 disp + 0.35 pulse
+            // + 0.35 spike = 1.35 with 0.05 margin slack). Below this,
+            // breathing + spikes occlude the particles.
+            EmissionSphereRadius = 1.3f,
             Gravity = Vector3.Zero,
             Direction = Vector3.Up,
             Spread = 180f,
@@ -253,15 +256,16 @@ public partial class MainNode3D : Node3D
             ScaleMin = 0.5f,
             ScaleMax = 1.5f,
             ColorRamp = MakeFadeGradient(),
-            // Slow orbit around scene centre — keeps particles in frame
-            // rather than drifting outward over a 5 s lifetime.
+            // orbit_velocity rotates particles around the emitter origin;
+            // the orbit radius equals EmissionSphereRadius (no separate
+            // OrbitRadius property exists in Godot 4).
             OrbitVelocityMin = 0.1f,
-            OrbitVelocityMax = 0.4f,
+            OrbitVelocityMax = 0.3f,
         };
 
-        _ambientParticles = new GpuParticles3D
+        _ambientParticles = new GpuParticles3D   // GpuParticles3D, not GPUParticles3D
         {
-            Amount = 250,
+            Amount = 400,   // 250 → 400 (larger sphere volume → more particles)
             Lifetime = 5.0,
             Emitting = true,
             AmountRatio = 0.3f,
@@ -269,9 +273,9 @@ public partial class MainNode3D : Node3D
             ProcessMaterial = pm,
             MaterialOverride = mat,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            // AABB must cover the full particle cloud or Godot frustum-culls
-            // the whole emitter. 4×4×4 encloses orbit radius (0.6) + jitter.
-            VisibilityAabb = new Aabb(new Vector3(-2, -2, -2), new Vector3(4, 4, 4)),
+            // AABB must cover orbit at radius 1.3 + spread. 6×6×6 = ±3,
+            // comfortably beyond.
+            VisibilityAabb = new Aabb(new Vector3(-3, -3, -3), new Vector3(6, 6, 6)),
         };
         AddChild(_ambientParticles);
     }
@@ -292,22 +296,24 @@ public partial class MainNode3D : Node3D
         var pm = new ParticleProcessMaterial
         {
             EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
-            EmissionSphereRadius = 0.45f,
+            // 0.7 → burst starts near sphere surface, not deep inside.
+            EmissionSphereRadius = 0.7f,
             Gravity = Vector3.Zero,
             Direction = Vector3.Up,
             Spread = 180f,
-            InitialVelocityMin = 1.0f,
-            InitialVelocityMax = 2.0f,
+            // 1.8–2.8 velocity: reach max sphere radius 1.35 in ~0.25 s,
+            // so most of the 0.8 s lifetime is visible.
+            InitialVelocityMin = 1.8f,
+            InitialVelocityMax = 2.8f,
             ScaleMin = 0.8f,
             ScaleMax = 2.0f,
             ColorRamp = MakeFadeGradient(),
-            // Damping bleeds the burst velocity to near-zero within the 0.8 s
-            // lifetime — "explode then settle", not "fly off screen".
-            DampingMin = 1.0f,
-            DampingMax = 2.0f,
+            // Damping ramped up — settles within lifetime without flying off.
+            DampingMin = 1.5f,
+            DampingMax = 2.5f,
         };
 
-        _burstParticles = new GpuParticles3D
+        _burstParticles = new GpuParticles3D   // GpuParticles3D
         {
             Amount = 120,
             Lifetime = 0.8,
@@ -317,7 +323,7 @@ public partial class MainNode3D : Node3D
             ProcessMaterial = pm,
             MaterialOverride = mat,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-            VisibilityAabb = new Aabb(new Vector3(-2, -2, -2), new Vector3(4, 4, 4)),
+            VisibilityAabb = new Aabb(new Vector3(-3, -3, -3), new Vector3(6, 6, 6)),
         };
         AddChild(_burstParticles);
     }
