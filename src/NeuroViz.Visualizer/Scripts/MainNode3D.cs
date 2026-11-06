@@ -158,15 +158,49 @@ void fragment() {
         // pipe write are off-thread in IpcClient.QueuePreview.
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))
+            CapturePreviewAfterDraw();
+    }
+
+    private bool _previewFirstCaptureLogged;
+
+    private async void CapturePreviewAfterDraw()
+    {
+        // GetTexture().GetImage() called from _Process reads the viewport
+        // before the current frame is drawn by the GPU — in GL compatibility
+        // mode this returns black reliably. Defer to FramePostDraw: by that
+        // signal the GPU has finished writing to the viewport texture and
+        // GetImage() returns real pixels.
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+
+        // Window may have been closed while awaiting.
+        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
+
+        var img = GetViewport().GetTexture().GetImage();
+        if (img == null || img.IsEmpty())
         {
-            var img = GetViewport().GetTexture().GetImage();
-            if (img != null)
-            {
-                img.Resize(320, 180, Image.Interpolation.Bilinear);
-                _ipc.QueuePreview(img);
-                img.Dispose();
-            }
+            GD.PrintErr("[Preview] GetImage returned null/empty");
+            return;
         }
+
+        // One-shot diagnostic: sample a sparse grid for any non-black pixel.
+        // If this logs non-black=0, capture is broken beyond the timing fix
+        // (likely renderer/driver); tell us and we switch to Forward+.
+        if (!_previewFirstCaptureLogged)
+        {
+            _previewFirstCaptureLogged = true;
+            int nonBlack = 0;
+            for (int y = 0; y < img.GetHeight(); y += 32)
+                for (int x = 0; x < img.GetWidth(); x += 32)
+                {
+                    var c = img.GetPixel(x, y);
+                    if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
+                }
+            GD.Print($"[Preview] First capture {img.GetWidth()}x{img.GetHeight()}, non-black samples: {nonBlack}");
+        }
+
+        img.Resize(320, 180, Image.Interpolation.Bilinear);
+        _ipc.QueuePreview(img);
+        img.Dispose();
     }
 
     public override void _ExitTree()

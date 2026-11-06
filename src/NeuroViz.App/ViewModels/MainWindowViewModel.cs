@@ -1,10 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
-using System.Drawing;
 using Avalonia;
 using Avalonia.Input.Platform;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using NeuroViz.Analysis;
