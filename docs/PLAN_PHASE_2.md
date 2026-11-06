@@ -1,9 +1,12 @@
 # Phase 2 — план до состояния «Phase 2 MVP достигнут»
 
-Документ фиксирует цель, границы, порядок и критерии готовности
-Phase 2. По образцу `PLAN_A1_LOAD_PROJECT.md`: каждая стадия имеет
-явное «готово когда», kill switch на рискованном шаге, открытые
-вопросы с ответом «когда решать».
+**Статус: achieved.** Все стадии (2.1–2.5) закрыты. Kill switch spike
+пройден. Критерий §8 выполнен.
+
+Документ остаётся как историческая карта решений: kill switches,
+открытые вопросы O1–O3 (решены: harmonicity → spikiness,
+band_energy.mid → density, stream_boundary → cycle), отказы
+(multi-track, node-graph в Phase 2, etc).
 
 **MVP-A/B/C/D закрыты.** Это следующий горизонт.
 
@@ -284,3 +287,6 @@ cross-references, настройки). README: секция «3D-визуали�
 - `docs: mark Phase 2 achieved`
 
 Каждый — рабочее состояние. 2.4 будет длинным; вероятно, разбить на подкоммиты: sphere-shader → particles → stream_boundary-траектории → palette-polish.
+
+**Выполнено.** Проверено ручным чек-листом (пять пунктов пройдены).
+Phase 2 достигнута.

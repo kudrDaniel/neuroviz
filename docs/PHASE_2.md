@@ -1,126 +1,118 @@
 # NeuroViz — Phase 2
 
-**Статус:** в работе. MVP закрыт (A/B/C/D). Это горизонт, на котором
-строится 3D-визуализация, preview в инспекторе и window management.
+**Статус: achieved.** MVP (A/B/C/D) и Phase 2 (P2-A/B/C) закрыты.
+3D-визуализатор, preview-thumbnail в инспекторе, window management
+и schema v3 с continuous-персистентностью — в master.
 
-**Полный план:** `docs/PLAN_PHASE_2.md`. Здесь — карта возможностей
-Phase 2 и того, что сознательно отложено в Phase 2.5+ / never.
+**Дальше — Phase 2.5+:** motif (DSP), offline export, cross-platform,
+node-graph editor, heatmap. Ничего из этого не блокирует базовый
+сценарий «открыл трек → увидел 3D → сохранил → загрузил → увидел
+без live».
 
 ---
 
-## В scope Phase 2
+## Реализовано в Phase 2
 
 ### P2-C — 3D-сцена
 
-**Цель:** сфера с шипами, частицы, idle-камера, palette. Реагирует
-на continuous (`band_energy.*`, `spectral_flux`, `vad_state`,
-`speech_music_ratio`) и events (`pulse`, `release`, `stream_boundary`).
+**Сцена:** `MainNode3D` / `spike.tscn`.
 
-**Компоненты (полностью — в PLAN_PHASE_2.md §2.4):**
-- Icosphere, displacement по нормали (pulse + band_energy.low).
-- `spikiness` uniform от harmonicity или spectral_centroid (O1).
-- `GPUParticles3D`: density от band_energy.mid или flux (O2),
-  emission-всплески от flux, смещение от pan_x, смена траектории
-  от stream_boundary (O3).
-- Idle-камера (медленный orbit).
-- Palette от shiver/novelty/pitch/band_energy.high.
-
-**Kill switch:** обязательный spike 2–3 дня перед full. Если spike
-не проходит по тех/функц/визуальным критериям — обсуждение, возможно
-пересмотр.
-
-**Оценка:** spike 2–3 дня, full 3–4 недели.
-
----
+- Icosphere с simplex-noise шипами (два октава, анимированный sampling).
+- `harmonicity` → spikiness (тоника/шум → гладко/остро).
+- `band_energy.low` → базовое «дыхание».
+- `pulse` (onset) → резкий выброс + emissive.
+- `release` (offset) → сжатие.
+- Палитра: `band_energy.high` (яркость), `pitch_height` (hue),
+  `shiver` (оранжевый), `cortex_flash` (белая вспышка).
+- Частицы: ambient (density от `band_energy.mid`), burst (разлёт от
+  `spectral_flux`), pan (сдвиг от `pan_x`), trajectory (Fast/Reverse/Idle
+  от `stream_boundary`).
+- Idle-камера (орбита + Y-свей, независима от playback).
+- Тени от DirectionalLight + finite-difference normal reconstruction.
+- Настройки в Settings UI: camera speed, Y amplitude, particle counts.
 
 ### P2-A — Preview-thumbnail
 
-Godot рендерит кадр 320×180 раз в 200 мс (5 fps) и шлёт по IPC
-отдельным типом `PreviewFrame`. Инспектор показывает `Image` в углу.
-`ProtocolVersion` 2→3. Клик по thumbnail — **не** фокусирует Godot
-(отменено: два процесса, QoL).
-
-**Оценка:** 1 день.
-
----
+`NeuroViz.Preview` pipe (Godot → App). Godot раз в 200 мс снимает
+viewport (post-draw), ресайзит 320×180, кодирует PNG, шлёт в App.
+Инспектор показывает `Image` в правом нижнем углу.
 
 ### P2-B — Window management
 
-- **Fullscreen on monitor N** — `DisplayServer.WindowSetCurrentScreen(N)`
-  + `WINDOW_MODE_FULLSCREEN`, по Control-команде.
-- **Always on top** — `WINDOW_FLAG_ALWAYS_ON_TOP`, по Control-команде.
-- **Geometry persistence** — `settings.json`, не `.nvproj`.
+Control-команды `SetWindowMode`, `SetAlwaysOnTop`. Применяются при
+Launch из `settings.json`. Fullscreen на monitor N, всегда сверху.
 
-**Оценка:** 3–4 часа.
+### Schema v3 — continuous в `.nvproj`
+
+`EventTimeline.ContinuousFrames` (8 ключей, `ContinuousFrame` с flat
+`float[8]`). Replay интерполирует из сохранённых frames. Сцена играет
+из `.nvproj` без live-сессии.
 
 ---
 
-## Phase 2.5+ (после Phase 2 MVP)
+## Что уже готово к Phase 2 (фундамент)
+
+- **Continuous-канал** — 8 ключей в `EventStreamFrame.ContinuousParams`,
+  schema v3 в `.nvproj`.
+- **IPC**: Control (long-lived), EventStream, MMF audio clock, Preview.
+- **Replay continuous** через `ContinuousInterpolation` — Load project =
+  полный визуал без live.
+- **Confidence model** (B1a/b/c) — детекторы не насыщаются на тихом
+  материале.
+- **Events**: onset, offset, novelty, pitch_salience, azimuth_estimate,
+  stream_boundary. Для шейдерных и частичных реакций достаточно.
+
+---
+
+## Phase 2.5+ (после Phase 2)
 
 Не в обозримом будущем — отдельные итерации:
 
 ### Motif detector (DSP)
 
-Chromagram (12 полутонов) по STFT-кадрам → self-similarity matrix →
-пики на диагоналях → событие `motif_repetition`. Требует ~5–10 с
-истории, окно SSM. 1–2 недели.
-
-**Замечание:** визуальная часть «припев узнаётся» **уже** решается
-через `stream_boundary` в P2-C (смена траектории частиц). Motif как
-DSP — дополнительная уникальность, не блокирует базовый визуал.
-
-### Offline export (P2-F) + offline pipeline (KI-3)
-
-Headless-рендер `--fixed-fps 60` + захват `get_viewport().get_texture()`
-→ ffmpeg subprocess → MP4 1080p. Требует offline pipeline (анализ без
-realtime BASS). KI-3 (быстрый Re-analyze) закрывается тем же pipeline.
+Chromagram → SSM → пики → событие `motif_repetition`. Визуальная
+часть «припев узнаётся» **уже** решена через `stream_boundary`
+(смена траектории частиц). Motif как DSP — уникальность, не блокер.
 1–2 недели.
 
-### Cross-platform (P2-G)
+### Offline export + offline pipeline
 
-BASS libs для Linux/macOS (`bass.so`, `bass.dylib`), проверка
-`NamedPipe` / `MemoryMappedFile` на Unix. Архитектурных блокеров нет —
-все API .NET кросс-платформенные. 1 неделя.
+Headless `--fixed-fps 60` + `get_viewport().get_texture().get_image()`
+→ ffmpeg → MP4 1080p. Требует offline pipeline (KI-3, быстрый
+Re-analyze). 1–2 недели.
 
-### Node-graph editor (P2-E)
+### Cross-platform
 
-Визуальный редактор в стиле TouchDesigner, **view над JSON** (не замена
-формата). Отдельный проект: недели масштаба. JSON остаётся единственным
-источником правды.
+BASS libs для Linux/macOS, проверка NamedPipe/MMF на Unix. 1 неделя.
 
-### Heatmap spectrum (P2-I)
+### Node-graph editor
 
-Полноценная спектрограмма (time × frequency) в Debug-режиме. Требует
-либо хранения полной `Magnitudes` (дорого), либо 128-полосной компактной
-версии. 2–3 дня.
+Визуальный редактор как **view над JSON**. Отдельный проект недель
+масштаба. JSON остаётся единственным источником правды.
+
+### Heatmap spectrum
+
+Полноценная спектрограмма в Debug-режиме. 2–3 дня.
 
 ---
 
 ## Вне плана (никогда)
 
-### P2-H — Multi-track
-
-Принципиально другая задача: сведение ≠ визуализация. Сознательно
-не совмещаем.
-
-### Click-to-focus preview (старый D3)
-
-Два процесса, QoL, не критично. Отменено.
+- **Multi-track** — принципиально другая задача (сведение ≠
+  визуализация). Не совмещаем.
+- **Click-to-focus preview** — два процесса, QoL, не критично.
 
 ---
 
-## Критерий «Phase 2 достигнута»
+## Критерий «Phase 2 достигнута» (выполнен)
 
-Полный список — в `PLAN_PHASE_2.md §8`. Краткая сводка:
+Полный список — в `PLAN_PHASE_2.md §8`. Пройдено:
 
-1. 3D-сцена реагирует на continuous + events.
-2. Preview-thumbnail в инспекторе, Reload Rules видно в preview.
-3. Fullscreen на monitor N + always-on-top из Settings.
-4. Save → Load → сцена играет без live (continuous из `.nvproj` v3).
-5. Настройка не требует редактирования `.json` руками.
-
-Когда все пять — `docs/PHASE_2.md` помечается «achieved», следующий
-горизонт — Phase 2.5.
+1. ✅ 3D-сцена реагирует на continuous + events.
+2. ✅ Preview-thumbnail в инспекторе, Reload Rules виден в preview.
+3. ✅ Fullscreen на monitor N + always-on-top из Settings.
+4. ✅ Save → Load → сцена играет без live (continuous из `.nvproj` v3).
+5. ✅ Настройка не требует редактирования `.json` руками.
 
 ---
 
@@ -128,28 +120,8 @@ BASS libs для Linux/macOS (`bass.so`, `bass.dylib`), проверка
 
 | Фича | Ценность | Стоимость | Приоритет |
 |---|---|---|---|
-| P2-C 3D-сцена | **Критическая** | Высокая | **Главная цель Phase 2** |
-| P2-A Preview | Высокая (tuning) | Низкая | Сразу после spike |
-| P2-B Window mgmt | Средняя (QoL) | Очень низкая | Параллельно, 3–4 ч |
 | Motif (DSP) | Высокая (уникальность) | Очень высокая | Phase 2.5 |
 | Offline export | Высокая | Высокая | Phase 2.5 |
 | Cross-platform | Средняя | Средняя | Phase 2.5, по запросу |
 | Node-graph | Высокая (UX) | Очень высокая | Отдельный проект someday |
 | Heatmap | Низкая | Средняя | Phase 2.5, опционально |
-
----
-
-## Что уже готово к Phase 2 (фундамент)
-
-- **Continuous-канал** — 8 ключей в `EventStreamFrame.ContinuousParams`,
-  `schema v3` в `.nvproj`.
-- **IPC**: Control pipe (hello, hello_ack), EventStream pipe, MMF audio clock.
-- **Replay continuous** через `ContinuousInterpolation` — Load project =
-  полный визуал без live.
-- **3D-ready данные**: `band_energy.{low,mid,high}`, `spectral_flux`,
-  `vad_state`, `speech_music_ratio`, `spectral_centroid`, `harmonicity` —
-  все доступны в `EventStreamFrame` каждый тик.
-- **Events**: onset, offset, novelty, pitch_salience, azimuth_estimate,
-  stream_boundary. Достаточно для шейдерных «попаданий».
-- **Rules**: JSON → params (pulse, shiver, release, stream_glow,
-  stream_fade, pan_x, pitch_height). Работают в 3D без изменений.

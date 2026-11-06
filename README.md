@@ -118,6 +118,12 @@ Y-амплитуда, количество частиц. Палитра и по�
 Чтобы вернуться к 2D-квадрату (эпоха MVP-B), временно переключи
 `main_scene` на `node_2d.tscn` в редакторе Godot.
 
+**Phase 2 закрыт.** Сцена полностью реагирует на события и continuous
+из `.nvproj` (schema v3), preview в инспекторе, настройки в UI.
+Дальнейшее развитие — Phase 2.5 (motif, export, cross-platform,
+node-graph). Текущее состояние — стабильный инструмент для соло-
+использования и показа.
+
 ## 🎛 Настройка (Tuning)
 
 Для кастомных наборов правил — укажите путь через **Settings…** (или
@@ -125,12 +131,23 @@ Y-амплитуда, количество частиц. Палитра и по�
 
 Подробное описание всех ползунков и настроек читайте в файле TUNING.md.
 
-### 🗺 Roadmap (Планы)
-☑ Слой 1: Базовые события (Onset, Spectral Flux).
-☑ Слой 2: Предсказательное кодирование (Novelty).
-☑ Интеграция Godot и IPC-мост.
-☑ Детекторы высоты тона (Pitch) и панорамы (Azimuth).
-□ Визуализация (Phase 2): Переход от 2D-квадрата к 3D-сцене с частицами и шейдерами.
-□ UX: Встроенный редактор правил (Node-Graph) в Avalonia.
-□ Экспорт: Оффлайн-рендер в видеоформат (1080p/4K).
-□ Кроссплатформенность: Сборки под Linux и macOS.
+### 🗺 Roadmap
+
+**MVP (A/B/C/D) — закрыт:**
+- ☑ Load/save проектов со всеми событиями и continuous-параметрами
+- ☑ Confidence-model (percentile, без насыщения на тихом материале)
+- ☑ Continuous-канал (band_energy, flux, VAD, spectral features)
+- ☑ Stream boundary (sticky section state)
+- ☑ Keyboard shortcuts, waveform, settings UI, re-analyze
+
+**Phase 2 — закрыт:**
+- ☑ 3D-сцена (спайки, частицы, палитра, idle-камера, тени)
+- ☑ Preview-thumbnail в инспекторе (320×180 @ 5 fps)
+- ☑ Window management (fullscreen на monitor N, always-on-top)
+- ☑ Schema v3: continuous в `.nvproj` → replay без live-сессии
+
+**Phase 2.5+ — следующее:**
+- ☐ Motif (DSP: chromagram + SSM)
+- ☐ Offline export (headless render → MP4)
+- ☐ Кроссплатформенность (Linux, macOS)
+- ☐ Node-graph rule editor (view над JSON)
