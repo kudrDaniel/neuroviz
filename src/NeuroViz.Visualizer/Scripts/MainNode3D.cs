@@ -18,6 +18,14 @@ public partial class MainNode3D : Node3D
     private ParamValueRef _cortexFlashState = new();
     private ParamValueRef _pitchState = new();
     private ParamValueRef _pulseState = new();
+    private float _contMid;
+    private float _smoothMid;
+    private float _contFlux;
+    private float _smoothFlux;
+    private double _lastBurstSeconds = -1.0;
+
+    private GpuParticles3D _ambientParticles = null!;
+    private GpuParticles3D _burstParticles = null!;
     private double _lastClock;
     private double _visualTime;
 
@@ -88,6 +96,9 @@ public partial class MainNode3D : Node3D
         _fpsLabel = new Label { Position = new Vector2(10, 10), Text = "Waiting..." };
         AddChild(_fpsLabel);
 
+        SetupAmbientParticles();
+        SetupBurstParticles();
+
         _ipc = new IpcClient();
         _ipc.Start();
     }
@@ -115,6 +126,10 @@ public partial class MainNode3D : Node3D
                 _contHarmonicity = h;
             if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh))
                 _contHigh = bh;
+            if (frame.ContinuousParams.TryGetValue("band_energy.mid", out var bm))
+                _contMid = bm;
+            if (frame.ContinuousParams.TryGetValue("spectral_flux", out var fl))
+                _contFlux = fl;
             if (frame.Params.TryGetValue("pulse", out var p))
                 _pulseState = new ParamValueRef { Value = p };
             if (frame.Params.TryGetValue("shiver", out var sv))
@@ -132,6 +147,10 @@ public partial class MainNode3D : Node3D
         _smoothLow = Mathf.Lerp(_smoothLow, _contLow, kb);
         _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kb);
         _smoothHigh = Mathf.Lerp(_smoothHigh, _contHigh, kb);
+        _smoothMid = Mathf.Lerp(_smoothMid, _contMid, kb);
+
+        float kf = 1f - Mathf.Exp(-30f * (float)delta);
+        _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
 
         double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
         float currentPulse = _pulseState.EvaluateAt(nowClock);
@@ -152,6 +171,22 @@ public partial class MainNode3D : Node3D
         _material.SetShaderParameter("white_flash", currentFlash);
         _material.SetShaderParameter("pitch_hue", currentPitch);
         _material.SetShaderParameter("band_high", _smoothHigh);
+        // Ambient density: smoothMid maps to AmountRatio [0.05 .. 1.0].
+        // Minimum 5% keeps a faint halo even on instrumental-intro; maximum
+        // 100% at fully saturated mid (vocal / melody sections).
+        float targetRatio = Mathf.Clamp(0.1f + _smoothMid * 0.9f, 0.05f, 1.0f);
+        _ambientParticles.AmountRatio =
+            Mathf.Lerp(_ambientParticles.AmountRatio, targetRatio, kb);
+
+        // Burst trigger: rising edge of spectral_flux above 0.18, refractory
+        // 200 ms (max 5 bursts/s). Uses smoothed flux so a single 40 Hz
+        // outlier frame doesn't fire; the 30 Hz smoothing still catches real
+        // attacks (10-50 ms duration).
+        if (_smoothFlux > 0.18f && nowClock - _lastBurstSeconds > 0.2)
+        {
+            _burstParticles.Restart();
+            _lastBurstSeconds = nowClock;
+        }
 
         float spikiness = 1f - _smoothHarmonicity;
         _material.SetShaderParameter("spikiness", spikiness);
@@ -159,7 +194,8 @@ public partial class MainNode3D : Node3D
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | high: {_smoothHigh:F3} | Cont: {contCount}\n" +
-            $"pulse: {currentPulse:F2} | shiver: {currentShiver:F2} | flash: {currentFlash:F2} | pitch: {currentPitch:F2}";
+            $"pulse: {currentPulse:F2} | shiver: {currentShiver:F2} | flash: {currentFlash:F2} | " +
+            $"mid: {_smoothMid:F2} | flux: {_smoothFlux:F2} | parts: {_ambientParticles.AmountRatio:F2}";
 
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))
@@ -190,6 +226,109 @@ public partial class MainNode3D : Node3D
         img.Resize(320, 180, Image.Interpolation.Bilinear);
         _ipc.QueuePreview(img);
         img.Dispose();
+    }
+
+    private void SetupAmbientParticles()
+    {
+        var quad = new QuadMesh { Size = new Vector2(0.025f, 0.025f) };
+
+        var mat = new StandardMaterial3D
+        {
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(0.4f, 0.7f, 1.0f, 0.7f),
+            VertexColorUseAsAlbedo = true,
+        };
+
+        var pm = new ParticleProcessMaterial
+        {
+            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.7f,
+            Gravity = Vector3.Zero,
+            Direction = Vector3.Up,
+            Spread = 180f,
+            InitialVelocityMin = 0.03f,
+            InitialVelocityMax = 0.10f,
+            ScaleMin = 0.5f,
+            ScaleMax = 1.5f,
+            ColorRamp = MakeFadeGradient(),
+            // Slow orbit around scene centre — keeps particles in frame
+            // rather than drifting outward over a 5 s lifetime.
+            OrbitVelocityMin = 0.1f,
+            OrbitVelocityMax = 0.4f,
+        };
+
+        _ambientParticles = new GpuParticles3D
+        {
+            Amount = 250,
+            Lifetime = 5.0,
+            Emitting = true,
+            AmountRatio = 0.3f,
+            DrawPass1 = quad,
+            ProcessMaterial = pm,
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            // AABB must cover the full particle cloud or Godot frustum-culls
+            // the whole emitter. 4×4×4 encloses orbit radius (0.6) + jitter.
+            VisibilityAabb = new Aabb(new Vector3(-2, -2, -2), new Vector3(4, 4, 4)),
+        };
+        AddChild(_ambientParticles);
+    }
+
+    private void SetupBurstParticles()
+    {
+        var quad = new QuadMesh { Size = new Vector2(0.04f, 0.04f) };
+
+        var mat = new StandardMaterial3D
+        {
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(1.0f, 1.0f, 0.9f, 0.95f),
+            VertexColorUseAsAlbedo = true,
+        };
+
+        var pm = new ParticleProcessMaterial
+        {
+            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 0.45f,
+            Gravity = Vector3.Zero,
+            Direction = Vector3.Up,
+            Spread = 180f,
+            InitialVelocityMin = 1.0f,
+            InitialVelocityMax = 2.0f,
+            ScaleMin = 0.8f,
+            ScaleMax = 2.0f,
+            ColorRamp = MakeFadeGradient(),
+            // Damping bleeds the burst velocity to near-zero within the 0.8 s
+            // lifetime — "explode then settle", not "fly off screen".
+            DampingMin = 1.0f,
+            DampingMax = 2.0f,
+        };
+
+        _burstParticles = new GpuParticles3D
+        {
+            Amount = 120,
+            Lifetime = 0.8,
+            OneShot = true,
+            Emitting = false,
+            DrawPass1 = quad,
+            ProcessMaterial = pm,
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            VisibilityAabb = new Aabb(new Vector3(-2, -2, -2), new Vector3(4, 4, 4)),
+        };
+        AddChild(_burstParticles);
+    }
+
+    private static GradientTexture1D MakeFadeGradient()
+    {
+        var g = new Gradient();
+        // Start opaque white, fade to transparent light blue at end-of-life.
+        g.SetColor(0, new Color(1.0f, 1.0f, 1.0f, 1.0f));
+        g.SetColor(1, new Color(0.5f, 0.7f, 1.0f, 0.0f));
+        return new GradientTexture1D { Gradient = g };
     }
 
     public override void _ExitTree() => _ipc.Dispose();

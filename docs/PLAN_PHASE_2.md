@@ -193,6 +193,12 @@ Palette (2.4e) рано — дешёвый, сильно меняет «ощущ
 emissive). Используются оба действия правила `novelty-shiver` —
 JSON-изменений нет. Детали тюнинга — в `TUNING.md §«3D-палитра»`.
 
+**2.4c реализовано:** ambient-частицы (density от `band_energy.mid`
+через `AmountRatio`), burst-частицы (`one_shot` `Restart()` на пиках
+`spectral_flux` > 0.18 с refractory 200 мс). Тени выключены. Тюнинг
+в `MainNode3D.SetupAmbientParticles` / `SetupBurstParticles` /
+`_Process`; детали — в `TUNING.md §«3D-частицы»`.
+
 ---
 
 ### 2.5 — Polish

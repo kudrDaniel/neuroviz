@@ -371,6 +371,56 @@ novelty (`error_magnitude >= 4.0` в правиле). На инструмент�
 светится оранжевым, не белым. `white_flash` добавляется поверх
 независимо — это единственный «цветной разрыв» конвейера.
 
+### 3D-частицы (2.4c)
+
+Два независимых `GPUParticles3D`:
+
+| Эмиттер | Amount | Lifetime | Вход | Формула |
+|---|---|---|---|---|
+| **Ambient** | 250 | 5 с | `band_energy.mid` | `AmountRatio = clamp(0.1 + mid*0.9, 0.05, 1.0)` |
+| **Burst** | 120 | 0.8 с, `one_shot` | `spectral_flux` | `Restart()` при `flux > 0.18 && dt_since_last > 0.2s` |
+
+**Ambient** — «жизнь вокруг сферы»: частицы спавнятся в шаре radius 0.7,
+медленно орбитируют, скорость мала (0.03–0.10). На тишине 5%
+(12 частиц), на плотном миксе 100% (250). Реагирует на «заполненность
+середины спектра» — мелодия, вокал, ритм-гитара.
+
+**Burst** — «разлёт на атаку»: 120 частиц из центра с velocity 1–2,
+затухают через damping за 0.8 с. `Restart()` на каждом пике flux, но
+не чаще 5 раз/с. Форма — сфера спавна radius 0.45, разлёт во все
+стороны (Spread 180°).
+
+**Тюнинг в коде** (`MainNode3D.cs`, методы `SetupAmbientParticles` /
+`SetupBurstParticles`):
+- `Amount` — общее число частиц в системе. 250/120 — бюджет
+  «незаметно по FPS на GTX 1060».
+- `EmissionSphereRadius` — объём спавна. 0.7 для ambient (вокруг
+  сферы), 0.45 для burst (из ядра).
+- `InitialVelocityMin/Max` — скорость. Ambient медленная, burst
+  быстрая.
+- `OrbitVelocity` (ambient only) — скорость орбиты.
+- `Damping` (burst only) — затухание.
+- `AlbedoColor` — цвет. Ambient синеватый (совпадает с base), burst
+  тёплый белый.
+- `MakeFadeGradient` — фейд по lifetime (opaque → transparent,
+  white → light blue).
+
+**Тюнинг в `_Process`:**
+- Порог burst: `_smoothFlux > 0.18f`. Понизить → больше burst'ов,
+  поднять → только самые сильные атаки.
+- Refractory burst: `nowClock - _lastBurstSeconds > 0.2`. Понизить →
+  чаще (но чаще 5/с уже мельтешит).
+- Baseline density: `0.1 + mid*0.9`. Хочешь «всегда плотно» —
+  подними baseline до 0.3; хочешь «пусто на тишине» — до 0.02.
+
+**Тени частиц выключены** (`ShadowCastingSetting.Off`): частицы
+мелкие, shadow map тратится впустую и даёт артефакты на billboard-
+спрайтах.
+
+**VisibilityAabb = 4×4×4** — если изменишь orbit radius или добавишь
+новые эмиттеры дальше от центра, расширь AABB, иначе Godot
+frustum-cull'ит всю систему при взгляде сбоку.
+
 ### Затухание
 Параметры в Godot вычисляются через `ParamValue.EvaluateAt(clock)`, который экспоненциально затухает на основе `decayMs` из JSON. Визуал всегда плавный, независимо от частоты кадров.
 
