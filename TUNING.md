@@ -339,6 +339,38 @@ continuous. Оно сохраняется в `.nvproj` (это `AudioEvent`), д
   серому (`Color.Lerp` к `(0.3, 0.3, 0.3)`, `currentFade * 0.5f`).
   `decayMs` = 2000 — «выдох» длиннее, чем вспышка открытия.
 
+### 3D-палитра (2.4e)
+
+Сфера в 3D реагирует на четыре входных параметра — три event-driven
+и один continuous:
+
+| Вход | Тип | Канал | Источник (правило) |
+|---|---|---|---|
+| `band_energy.high` | continuous | base brightness (×0.7..1.3) | detector |
+| `pitch_height` | event, 150 мс | hue shift (blue → cyan → white) | `pitch-brightness` |
+| `shiver` | event, 1000 мс | orange tint (mix до 70%) | `novelty-shiver` |
+| `cortex_flash` | event, 400 мс | белая emissive вспышка | `novelty-shiver` |
+
+**Поведение на novelty:** за 400 мс — белая вспышка → 600 мс —
+оранжевый тинт → синий. Используются **оба** параметра правила
+`novelty-shiver` (`shiver` + `cortex_flash`), поэтому менять JSON
+для изменения палитры не нужно — только правила `decayMs`/`value`.
+
+**Тюнинг в шейдере** (`spike_sharp.gdshader`, функция `fragment`):
+- `base_color *= 0.7 + band_high * 0.6` — амплитуда brightness от `high`.
+- `mix(base, pitch_target, pitch_hue * 0.6)` — глубина hue-сдвига от pitch.
+- `mix(base, orange, shiver * 0.7)` — сила оранжевого тинта.
+- `vec3(1.0, 0.95, 0.85) * white_flash` — цвет и сила белой вспышки.
+
+Если на спокойных треках палитра «скучная» (всегда синяя) — это
+нормально: `shiver`/`cortex_flash` срабатывают только на strong
+novelty (`error_magnitude >= 4.0` в правиле). На инструментале без
+смен секций палитра останется стабильной.
+
+**Emission** использует тот же `base_color` — оранжевая вспышка
+светится оранжевым, не белым. `white_flash` добавляется поверх
+независимо — это единственный «цветной разрыв» конвейера.
+
 ### Затухание
 Параметры в Godot вычисляются через `ParamValue.EvaluateAt(clock)`, который экспоненциально затухает на основе `decayMs` из JSON. Визуал всегда плавный, независимо от частоты кадров.
 

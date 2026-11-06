@@ -12,6 +12,11 @@ public partial class MainNode3D : Node3D
     private float _contHarmonicity;
     private float _smoothLow;
     private float _smoothHarmonicity;
+    private float _contHigh;
+    private float _smoothHigh;
+    private ParamValueRef _shiverState = new();
+    private ParamValueRef _cortexFlashState = new();
+    private ParamValueRef _pitchState = new();
     private ParamValueRef _pulseState = new();
     private double _lastClock;
     private double _visualTime;
@@ -108,8 +113,16 @@ public partial class MainNode3D : Node3D
                 _contLow = bl;
             if (frame.ContinuousParams.TryGetValue("harmonicity", out var h))
                 _contHarmonicity = h;
+            if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh))
+                _contHigh = bh;
             if (frame.Params.TryGetValue("pulse", out var p))
                 _pulseState = new ParamValueRef { Value = p };
+            if (frame.Params.TryGetValue("shiver", out var sv))
+                _shiverState = new ParamValueRef { Value = sv };
+            if (frame.Params.TryGetValue("cortex_flash", out var cf))
+                _cortexFlashState = new ParamValueRef { Value = cf };
+            if (frame.Params.TryGetValue("pitch_height", out var ph))
+                _pitchState = new ParamValueRef { Value = ph };
         }
 
         // Same smoothing as 2D MainNode for band_energy (kb, τ ≈ 83 ms).
@@ -118,29 +131,35 @@ public partial class MainNode3D : Node3D
         float kb = 1f - Mathf.Exp(-12f * (float)delta);
         _smoothLow = Mathf.Lerp(_smoothLow, _contLow, kb);
         _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kb);
+        _smoothHigh = Mathf.Lerp(_smoothHigh, _contHigh, kb);
 
-        // Pulse decays via EvaluateAt on the audio clock — same source
-        // of truth as 2D scene, so a seek / pause behaves identically.
         double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
         float currentPulse = _pulseState.EvaluateAt(nowClock);
+        float currentShiver = _shiverState.EvaluateAt(nowClock);
+        float currentFlash = _cortexFlashState.EvaluateAt(nowClock);
+        float currentPitch = _pitchState.EvaluateAt(nowClock);
         // Visual time advances regardless of audio state — spikes keep
         // drifting on pause. Independent of audio clock so seek does not
         // "rewind" the noise field (would be jarring).
         _visualTime += delta;
         _material.SetShaderParameter("time", (float)_visualTime);
-
-        // Spikiness: harmonicity 1 (pure tone) → 0 (smooth),
-        //            harmonicity 0 (noise)     → 1 (sharp spikes).
-        float spikiness = 1f - _smoothHarmonicity;
-
         _material.SetShaderParameter("displacement", _smoothLow);
         _material.SetShaderParameter("pulse", currentPulse);
+        _material.SetShaderParameter("spikiness", 1f - _smoothHarmonicity);
+
+        // Palette (2.4e)
+        _material.SetShaderParameter("shiver", currentShiver);
+        _material.SetShaderParameter("white_flash", currentFlash);
+        _material.SetShaderParameter("pitch_hue", currentPitch);
+        _material.SetShaderParameter("band_high", _smoothHigh);
+
+        float spikiness = 1f - _smoothHarmonicity;
         _material.SetShaderParameter("spikiness", spikiness);
 
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
-            $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | " +
-            $"spk: {spikiness:F2} | pulse: {currentPulse:F2} | Cont: {contCount}";
+            $"low: {_smoothLow:F3} | harm: {_smoothHarmonicity:F3} | high: {_smoothHigh:F3} | Cont: {contCount}\n" +
+            $"pulse: {currentPulse:F2} | shiver: {currentShiver:F2} | flash: {currentFlash:F2} | pitch: {currentPitch:F2}";
 
         double now = Time.GetTicksMsec() / 1000.0;
         if (_ipc.ShouldCapturePreview(now))

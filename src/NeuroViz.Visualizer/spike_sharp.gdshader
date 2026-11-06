@@ -5,9 +5,13 @@ uniform float displacement : hint_range(0.0, 1.0) = 0.0;
 uniform float pulse : hint_range(0.0, 1.0) = 0.0;
 uniform float spikiness : hint_range(0.0, 1.0) = 0.0;
 uniform float spike_amplitude = 0.35;
-// Accumulated from _Process in MainNode3D. Advances even when audio is
-// paused so the scene does not freeze visually.
 uniform float time = 0.0;
+
+// Palette — 2.4e.
+uniform float shiver = 0.0;         // 0..1, orange tint (novelty, 1000ms decay)
+uniform float white_flash = 0.0;    // 0..1, cortex_flash (novelty, 400ms decay)
+uniform float pitch_hue = 0.0;      // 0..1, pitch_height (blue → cyan → white)
+uniform float band_high = 0.0;      // 0..1, band_energy.high (base brightness)
 
 // ── 3D simplex noise (Ashima Arts / Stefan Gustavson, MIT) ─────────────
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -58,23 +62,16 @@ float snoise(vec3 v) {
     return 42.0 * dot(m * m, vec4(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
-// ── Animation + displacement ──────────────────────────────────────────
+// ── Animation + displacement (pure function — vertex and fragment must
+//    agree on geometry). ────────────────────────────────────────────────
 vec3 rotate_y(vec3 v, float angle) {
     float c = cos(angle);
     float s = sin(angle);
     return vec3(c * v.x - s * v.z, v.y, s * v.x + c * v.z);
 }
 
-// Displacement as a function of unit-sphere direction n. Reused by both
-// the vertex stage and the fragment normal reconstruction (finite
-// differences) — MUST stay a pure function of n and uniforms, so both
-// stages agree on geometry.
 float compute_displacement(vec3 n_unit) {
-    // Time-based rotation makes spikes drift across the sphere surface.
-    // 0.1 rad/s → full rotation in ~63 seconds. Slower would look static;
-    // faster would feel like a spinning noise texture.
     vec3 sample_pos = rotate_y(n_unit, time * 0.1);
-
     float n_low  = snoise(sample_pos * 2.0) * 0.5 + 0.5;
     float n_high = snoise(sample_pos * 8.0) * 0.5 + 0.5;
     float blend = mix(n_low, n_high, spikiness);
@@ -88,16 +85,11 @@ float compute_displacement(vec3 n_unit) {
 varying vec3 v_local_pos;
 
 void vertex() {
-    // VERTEX is local space in Godot 4. Keep the undisplaced direction
-    // so fragment can reconstruct normals in the same coordinate system.
     v_local_pos = VERTEX;
-
     vec3 n = normalize(VERTEX);
-    float d = compute_displacement(n);
-    VERTEX += NORMAL * d;
+    VERTEX += NORMAL * compute_displacement(n);
 }
 
-// Orthonormal tangent basis on a sphere, safe at the poles.
 void tangent_basis(vec3 n, out vec3 t, out vec3 b) {
     vec3 up = abs(n.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     t = normalize(cross(up, n));
@@ -105,10 +97,7 @@ void tangent_basis(vec3 n, out vec3 t, out vec3 b) {
 }
 
 void fragment() {
-    // Reconstruct displaced normal via finite differences in local space.
-    // Three surface points p0/p1/p2; cross((p1-p0), (p2-p0)) is the
-    // outward normal of the triangle formed by those points. Cheap
-    // approximation but reads correctly for noise-scale displacement.
+    // ── Normal reconstruction (2.4a-fix, unchanged) ────────────────────
     vec3 n = normalize(v_local_pos);
     vec3 t, b;
     tangent_basis(n, t, b);
@@ -126,21 +115,39 @@ void fragment() {
     vec3 p2 = n_v * (0.5 + dv);
 
     vec3 normal_local = normalize(cross(p1 - p0, p2 - p0));
-
-    // NORMAL expects view space in fragment.
-    // MODELVIEW_MATRIX is vertex-only in Godot 4; fragment composes it from
-    // VIEW_MATRIX (world→view) * MODEL_MATRIX (local→world). The sphere has
-    // no scaling in MainNode3D, so skipping the inverse-transpose for the
-    // normal is correct here; add transpose(inverse(mat3(MODEL_MATRIX))) if
-    // non-uniform scaling is ever applied to the MeshInstance3D.
     NORMAL = normalize((VIEW_MATRIX * MODEL_MATRIX * vec4(normal_local, 0.0)).xyz);
-
-    // Amplify valley darkness: low displacement = hidden between spikes.
-    // Cheap AO substitute; real SSAO would be a full post-process.
     AO = clamp(0.5 + d0 * 1.5, 0.4, 1.0);
 
-    ALBEDO = vec3(0.2, 0.5, 0.9);
-    // Emission lower than before (was 0.4+disp+pulse*0.8) so shadows
-    // are visible. Emission still carries the "flash on attack" feel.
-    EMISSION = vec3(0.15, 0.3, 0.6) * (0.25 + displacement * 0.5 + pulse * 0.5);
+    // ── Palette (2.4e) ─────────────────────────────────────────────────
+    // Composition order: base blue → brightness (band_high) →
+    // hue shift (pitch) → orange tint (shiver). Each layer is a mix()
+    // so the identity of "the sphere" is preserved as a stable blue
+    // centre even when all inputs are near zero.
+    vec3 base_color = vec3(0.2, 0.5, 0.9);
+
+    // band_energy.high → brightness, 0.7..1.3 multiplier.
+    base_color *= 0.7 + band_high * 0.6;
+
+    // pitch → hue shift: low note stays blue (pitch = 0, no change),
+    // high note moves toward cyan/white. pitch * 0.6 caps the shift at
+    // 60% of the way to the target so blue never disappears entirely.
+    vec3 pitch_target = mix(
+        vec3(0.4, 0.85, 1.0),   // cyan at pitch = 0
+        vec3(0.9, 0.95, 1.0),   // near-white at pitch = 1
+        pitch_hue);
+    base_color = mix(base_color, pitch_target, pitch_hue * 0.6);
+
+    // shiver → orange tint. 0.7 max mix keeps a trace of the underlying
+    // blue (shiver-tinted orange reads warmer than flat orange).
+    base_color = mix(base_color, vec3(1.0, 0.55, 0.15), shiver * 0.7);
+
+    ALBEDO = base_color;
+
+    // ── Emission ───────────────────────────────────────────────────────
+    // Base emission uses the palette colour, so pulse/shiver/band_high
+    // all change the glow tone, not just the albedo. White flash adds
+    // on top unconditionally (short, bright, doesn't need palette).
+    vec3 emission = base_color * (0.3 + displacement * 0.5 + pulse * 0.6);
+    emission += vec3(1.0, 0.95, 0.85) * white_flash;
+    EMISSION = emission;
 }
