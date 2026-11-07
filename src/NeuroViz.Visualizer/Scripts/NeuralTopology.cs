@@ -62,6 +62,13 @@ public sealed class NeuralTopology
         return dists[dists.Count / 2];
     }
 
+    public void ReplaceIntraEdges(IEnumerable<(int a, int b)> newIntra)
+    {
+        _edges.RemoveAll(e => !e.IsCrossCallosum);
+        foreach (var (a, b) in newIntra)
+            _edges.Add(new NeuralEdge { A = a, B = b, IsCrossCallosum = false });
+    }
+
     public static NeuralTopology Generate(
         int nodesPerHemisphere = 800,
         int edgesPerNode = 4,

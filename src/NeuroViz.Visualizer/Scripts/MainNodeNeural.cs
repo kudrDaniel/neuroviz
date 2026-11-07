@@ -133,6 +133,23 @@ public partial class MainNodeNeural : Node3D
         }
     }
 
+    // N.7-fix3 (B1): in-memory snapshot history for seek-restore and
+    // deterministic replay. Persistence in .nvproj (B2) deferred.
+    private sealed class RestructureSnapshot
+    {
+        public double Timestamp;
+        public Vector3[] NodePositions = Array.Empty<Vector3>();
+        public List<(int a, int b)> IntraEdges = new();
+    }
+    private readonly List<RestructureSnapshot> _restructureHistory = new();
+    private RestructureSnapshot? _initialSnapshot;
+    private sealed class PendingSnapshot
+    {
+        public double Timestamp;
+        public bool IsNew;
+    }
+    private PendingSnapshot? _pendingSnapshot;
+
     public override void _Ready()
     {
         _topology = NeuralTopology.Generate(
@@ -191,6 +208,10 @@ public partial class MainNodeNeural : Node3D
 
         _ipc = new IpcClient();
         _ipc.Start();
+
+        // B1: initial snapshot — state before any restructure. Seek to any
+        // position before the first stream_boundary restores to this.
+        _initialSnapshot = TakeSnapshot(0.0);
 
         // N.4-fix3 diagnostic: confirm the topology and base positions are
         // finite before any rendering happens. If this logs "non-finite: N>0",
@@ -511,7 +532,7 @@ public partial class MainNodeNeural : Node3D
                 if (ev.Type == "stream_boundary" && ev.Params.GetValueOrDefault("open", 0f) >= 0.5f)
                 {
                     float strength = ev.Params.GetValueOrDefault("strength", 0f);
-                    StartRestructure(strength, nowClock);
+                    StartRestructure(strength, nowClock, ev.TimestampSeconds);
                 }
             }
 
@@ -968,6 +989,23 @@ public partial class MainNodeNeural : Node3D
     /// </summary>
     private void ResetTimelineState(double nowClock)
     {
+        // B1: restore topology to the snapshot at or before the seek target.
+        // B2 (persistence in .nvproj) is deferred — this covers seek within
+        // the current session.
+        double seekTarget = nowClock;   // already the new position
+        RestructureSnapshot? restore = _initialSnapshot;
+        foreach (var s in _restructureHistory)
+        {
+            if (s.Timestamp <= seekTarget + 0.001) restore = s;
+            else break;
+        }
+        if (restore != null) RestoreSnapshot(restore);
+
+        _restructureActive = false;
+        _restructureTargets.Clear();
+        _restructureStartPositions.Clear();
+        _pendingSnapshot = null;
+
         _pending.Clear();
         _lastPulseSetAt = double.NegativeInfinity;
         _lastReleaseSetAt = double.NegativeInfinity;
@@ -1004,34 +1042,26 @@ public partial class MainNodeNeural : Node3D
         }
         _neuroWriteIndex = 0;
 
-        // N.7: cancel any in-flight restructure. Snap moving nodes to their
-        // targets so the network isn't left frozen mid-air; a seek is a jump,
-        // not a pause-and-rewind of the restructure.
-        if (_restructureTargets.Count > 0)
-        {
-            foreach (var kvp in _restructureTargets)
-            {
-                _topology.Nodes[kvp.Key].Position = kvp.Value;
-                _nodeBasePos[kvp.Key] = kvp.Value;
-            }
-            BuildAdjacency();
-            PrecomputeNodeWaveData();
-            UpdateWaveShaderConstants();
-            RebuildIntraEdgeMesh();
-            RebuildCCEdgeMesh();
-        }
-        _restructureActive = false;
-        _restructureTargets.Clear();
-        _restructureStartPositions.Clear();
-
         GD.Print($"[Neural] Timeline reset at clock={nowClock:F2} (seek or track change)");
     }
 
-    private void StartRestructure(float strength, double nowClock)
+    private void StartRestructure(float strength, double nowClock, double eventTimestamp)
     {
         if (_restructureActive) return;
         if (nowClock - _lastRestructureTime < 2.0) return;
         _lastRestructureTime = nowClock;
+
+        // B1: if this event has already been applied (same timestamp within
+        // 1 ms), we are replaying it. Deterministic RNG ensures identical
+        // result. Snapshot is not duplicated.
+        bool isNew = !_restructureHistory.Any(
+            s => Math.Abs(s.Timestamp - eventTimestamp) < 0.001);
+
+        _pendingSnapshot = new PendingSnapshot
+        {
+            Timestamp = eventTimestamp,
+            IsNew = isNew,
+        };
 
         _restructureActive = true;
         _restructureStartTime = nowClock;
@@ -1043,7 +1073,9 @@ public partial class MainNodeNeural : Node3D
             : 0.30f;
         int moveCount = (int)(fraction * _topology.Nodes.Count);
 
-        var rng = new Random();
+        // Deterministic seed from event timestamp — same seed → same
+        // Random sequence → same moved nodes and targets on every pass.
+        var rng = new Random(DeterministicSeed(eventTimestamp));
         var indices = Enumerable.Range(0, _topology.Nodes.Count)
             .OrderBy(_ => rng.Next())
             .Take(moveCount);
@@ -1056,7 +1088,14 @@ public partial class MainNodeNeural : Node3D
         }
 
         GD.Print($"[Neural] Restructure: {moveCount} nodes moving " +
-                 $"(strength={strength:F1}, fraction={fraction:F2})");
+                 $"(strength={strength:F1}, fraction={fraction:F2}, " +
+                 $"{(isNew ? "new" : "replay")})");
+    }
+
+    private static int DeterministicSeed(double timestamp)
+    {
+        long ms = (long)Math.Round(timestamp * 1000.0);
+        return (int)(ms ^ 0x5DEECE66D);
     }
 
     private Vector3 ComputeRestructureTarget(NeuralNode node, Random rng)
@@ -1180,23 +1219,28 @@ public partial class MainNodeNeural : Node3D
     private void FinishRestructure()
     {
         var moved = new HashSet<int>(_restructureTargets.Keys);
-        float threshold = _topology.ComputeMedianIntraEdgeDistance() * 1.5f;
 
-        // Q4: break edges where either endpoint moved and the gap exceeds
-        // the threshold (1.5× the current median).
+        // N.7-fix2: full re-formation for moved nodes. The threshold-based
+        // remove + add-only-if-missing logic let edges accumulate across
+        // iterations: a moved node added K new neighbors but old edges to
+        // now-distant nodes stayed because neither endpoint was "too far"
+        // in a subsequent iteration. Average degree grew 5.6 → 7.5 over
+        // four restructures, meshes grew, FPS dropped 60 → 47. Full
+        // removal caps avg degree at K for every node that ever moves,
+        // stabilising mesh size and FPS after the first restructure.
+        //
+        // Loss: near-threshold edges that survived in the old scheme are
+        // now broken. Semantically correct — a moved node's neighborhood
+        // has changed, all its edges are stale.
         var toRemove = new List<(int a, int b)>();
         foreach (var edge in _topology.Edges)
         {
             if (edge.IsCrossCallosum) continue;
-            if (!moved.Contains(edge.A) && !moved.Contains(edge.B)) continue;
-            var pa = _topology.Nodes[edge.A].Position;
-            var pb = _topology.Nodes[edge.B].Position;
-            if ((pa - pb).Length() > threshold)
+            if (moved.Contains(edge.A) || moved.Contains(edge.B))
                 toRemove.Add((edge.A, edge.B));
         }
         foreach (var (a, b) in toRemove) _topology.RemoveEdge(a, b);
 
-        // Q4: K-nearest re-formation, same layer + hemisphere (Q1).
         int addedCount = 0;
         foreach (int i in moved)
         {
@@ -1222,23 +1266,67 @@ public partial class MainNodeNeural : Node3D
             }
         }
 
-        // Adjacency must be rebuilt — cascade (N.3) follows the new edges.
         BuildAdjacency();
         PrecomputeNodeWaveData();
         UpdateWaveShaderConstants();
-
-        // Cascade in flight was following old edges. Drop it — the seeded
-        // wave will start from a new activation on the next pulse anyway.
         _pending.Clear();
 
         _restructureActive = false;
         _restructureTargets.Clear();
         _restructureStartPositions.Clear();
 
+        // B1: snapshot represents state AFTER this restructure. Timestamp is
+        // the event's, not nowClock — on seek we look for max
+        // snapshot.Timestamp <= seek position; finding this snapshot means
+        // "position is past the boundary, network should be in post-restructure
+        // state".
+        if (_pendingSnapshot is { IsNew: true } p)
+        {
+            _restructureHistory.Add(TakeSnapshot(p.Timestamp));
+            _restructureHistory.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        }
+        _pendingSnapshot = null;
+
         int intraTotal = _topology.Edges.Count(e => !e.IsCrossCallosum);
         GD.Print($"[Neural] Restructure done: {moved.Count} nodes moved, " +
                  $"{toRemove.Count} edges broken, {addedCount} edges formed, " +
-                 $"{intraTotal} intra total");
+                 $"{intraTotal} intra total (FPS stabilisation)");
+    }
+
+    private RestructureSnapshot TakeSnapshot(double timestamp)
+    {
+        var positions = new Vector3[_topology.Nodes.Count];
+        for (int i = 0; i < _topology.Nodes.Count; i++)
+            positions[i] = _topology.Nodes[i].Position;
+
+        var intra = _topology.Edges
+            .Where(e => !e.IsCrossCallosum)
+            .Select(e => (e.A, e.B))
+            .ToList();
+
+        return new RestructureSnapshot
+        {
+            Timestamp = timestamp,
+            NodePositions = positions,
+            IntraEdges = intra,
+        };
+    }
+
+    private void RestoreSnapshot(RestructureSnapshot snap)
+    {
+        for (int i = 0; i < snap.NodePositions.Length; i++)
+        {
+            _topology.Nodes[i].Position = snap.NodePositions[i];
+            _nodeBasePos[i] = snap.NodePositions[i];
+            _nodePhase[i] = HashPhase(snap.NodePositions[i]);
+        }
+        _topology.ReplaceIntraEdges(snap.IntraEdges);
+
+        BuildAdjacency();
+        PrecomputeNodeWaveData();
+        UpdateWaveShaderConstants();
+        RebuildIntraEdgeMesh();
+        RebuildCCEdgeMesh();
     }
 
     private void SetupNeurotransmitters()
