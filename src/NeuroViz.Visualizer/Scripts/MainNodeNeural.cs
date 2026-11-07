@@ -150,6 +150,13 @@ public partial class MainNodeNeural : Node3D
     }
     private PendingSnapshot? _pendingSnapshot;
 
+    // N.7-fix4: the boundary timestamp we restored from during the last
+    // seek. If the same boundary event arrives in frame.Events within
+    // half a second of playback, we are already at the post-state for it
+    // (snapshot restore) — skip re-firing StartRestructure, which would
+    // double-restructure on top of the post-state.
+    private double _lastRestoreTimestamp = double.NegativeInfinity;
+
     public override void _Ready()
     {
         _topology = NeuralTopology.Generate(
@@ -212,6 +219,7 @@ public partial class MainNodeNeural : Node3D
         // B1: initial snapshot — state before any restructure. Seek to any
         // position before the first stream_boundary restores to this.
         _initialSnapshot = TakeSnapshot(0.0);
+        _lastRestoreTimestamp = 0.0;
 
         // N.4-fix3 diagnostic: confirm the topology and base positions are
         // finite before any rendering happens. If this logs "non-finite: N>0",
@@ -999,7 +1007,21 @@ public partial class MainNodeNeural : Node3D
             if (s.Timestamp <= seekTarget + 0.001) restore = s;
             else break;
         }
-        if (restore != null) RestoreSnapshot(restore);
+        if (restore != null)
+        {
+            RestoreSnapshot(restore);
+            _lastRestoreTimestamp = restore.Timestamp;
+        }
+
+        // N.7-fix4: reset the restructure cooldown relative to the new
+        // position. Without this, a backward seek leaves _lastRestructureTime
+        // in the future; every boundary crossed after the seek is blocked by
+        // "nowClock - _lastRestructureTime < 2.0" (which evaluates true for
+        // any negative difference). Same class of bug as _pending before
+        // N.4-fix2. Offset by -10 s so the first boundary after the seek can
+        // fire immediately — cooldown is a debounce, not a "must be idle for
+        // 2 s" gate.
+        _lastRestructureTime = nowClock - 10.0;
 
         _restructureActive = false;
         _restructureTargets.Clear();
@@ -1049,6 +1071,7 @@ public partial class MainNodeNeural : Node3D
     {
         if (_restructureActive) return;
         if (nowClock - _lastRestructureTime < 2.0) return;
+        if (eventTimestamp <= _lastRestoreTimestamp + 0.5) return;   // ← NEW
         _lastRestructureTime = nowClock;
 
         // B1: if this event has already been applied (same timestamp within
