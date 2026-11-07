@@ -65,6 +65,14 @@ public partial class MainNodeNeural : Node3D
     private MeshInstance3D _intraMeshInstance = null!;
     private MeshInstance3D[] _ccMeshInstances = new MeshInstance3D[3];
 
+    // N.8: idle orbit camera + novelty zoom-out.
+    // Defaults match spike (0.05 rad/s, 0.4 Y-amplitude). N.9 will wire
+    // these to Settings; for now they are constants.
+    private Camera3D _camera = null!;
+    private double _visualTime;
+    private float _cameraOrbitSpeed = 0.05f;
+    private float _cameraYAmplitude = 0.4f;
+
     private const float WaveDuration = 0.6f;
     private const float WavePulseDuration = 0.4f;
     private const float MaxNonuniformity = 0.3f;
@@ -198,12 +206,12 @@ public partial class MainNodeNeural : Node3D
     // ── Scene basics ───────────────────────────────────────────────
     private void SetupCameraAndLight()
     {
-        // Camera distance bumped 2.1 → 2.9 to preserve visual fill after the
-        // X-span doubled (1.66 → 2.29 bounding diagonal, ratio 1.38×). Camera
-        // sits on the midline (X=1.0) so both hemispheres are symmetric in frame.
-        var camera = new Camera3D { Position = new Vector3(1.0f, 0.55f, 2.9f) };
-        AddChild(camera);
-        camera.LookAt(new Vector3(1.0f, 0, 0));
+        // Initial position is the orbit's t=0 point (see UpdateIdleCamera):
+        // centre (1, 0, 0) + orbit radius (2.9) along +X, with the Y offset.
+        // No visible jump when _Process starts moving the camera.
+        _camera = new Camera3D { Position = new Vector3(3.9f, 0.55f, 0.0f) };
+        AddChild(_camera);
+        _camera.LookAt(new Vector3(1.0f, 0, 0));
 
         AddChild(new DirectionalLight3D
         {
@@ -600,6 +608,10 @@ public partial class MainNodeNeural : Node3D
         // is driven by (1 - harmonicity): clean tonal material → ordered front
         // like a water ripple; noisy material → chaotic front like spreading fire.
         float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
+
+        float targetFov = 75f + shiver * 8f;
+        _camera.Fov = Mathf.Lerp(_camera.Fov, targetFov, 1f - Mathf.Exp(-8f * (float)delta));
+
         UpdateNodeTransforms(nowClock, nonuniformity);
 
         UpdateNodeColors(pitch);
@@ -644,6 +656,9 @@ public partial class MainNodeNeural : Node3D
             $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
             $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2} | " +
             $"vad: {_smoothVad:F2} | smr: {_smoothSmr:F2}";
+
+        _visualTime += delta;
+        UpdateIdleCamera();
     }
 
     private void BuildAdjacency()
@@ -810,6 +825,33 @@ public partial class MainNodeNeural : Node3D
         }
         foreach (var m in _waveReceivers)
             m.SetShaderParameter("current_time", nowF);
+    }
+
+    /// <summary>
+    /// Slow idle orbit around the structure centre in world coordinates.
+    /// Structure lives at world (1, 0, 0) (SceneRoot.Position = -1.03,
+    /// scale 2, local centroid at X = 1.0 → world 1.0). Orbit radius 2.9
+    /// = the N.2-fix2 camera distance, so the initial view is preserved
+    /// and the structure fills ~46% of the frame throughout the orbit.
+    ///
+    /// Driven by _visualTime (advanced from _Process, independent of
+    /// playback), matching spike: the camera drifts on pause and does not
+    /// jump on seek.
+    /// </summary>
+    private void UpdateIdleCamera()
+    {
+        const float orbitRadius = 2.9f;
+        const float ySpeed = 0.03f;   // independent from orbit speed
+        var center = new Vector3(1.0f, 0f, 0f);
+
+        float angle = (float)_visualTime * _cameraOrbitSpeed;
+        float yOffset = 0.55f + Mathf.Sin((float)_visualTime * ySpeed) * _cameraYAmplitude;
+
+        _camera.Position = new Vector3(
+            center.X + Mathf.Cos(angle) * orbitRadius,
+            center.Y + yOffset,
+            center.Z + Mathf.Sin(angle) * orbitRadius);
+        _camera.LookAt(center);
     }
 
     private static bool IsFinite(Vector3 v)
