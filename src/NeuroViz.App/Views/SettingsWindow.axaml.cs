@@ -90,10 +90,33 @@ public partial class SettingsWindow : Window
 
         AlwaysOnTopBox.IsChecked = _target.VisualizerAlwaysOnTop;
 
+        // Scene
+        var currentScene = string.IsNullOrEmpty(_target.VisualizerScene)
+            ? "spike" : _target.VisualizerScene;
+        for (int i = 0; i < SceneBox.ItemCount; i++)
+        {
+            if ((SceneBox.Items[i] as ComboBoxItem)?.Tag as string == currentScene)
+            {
+                SceneBox.SelectedIndex = i;
+                break;
+            }
+        }
+
+        // Spike tuning
         CameraOrbitSlider.Value = Math.Clamp(_target.CameraOrbitSpeed, 0.01, 0.2);
         CameraYSlider.Value = Math.Clamp(_target.CameraYAmplitude, 0.0, 1.0);
         AmbientSlider.Value = Math.Clamp(_target.AmbientParticleCount, 20, 1000);
         BurstSlider.Value = Math.Clamp(_target.BurstParticleCount, 20, 500);
+
+        // Neural tuning
+        NeuralNodesSlider.Value = Math.Clamp(_target.NeuralNodesPerHemisphere, 200, 1500);
+        NeuralEdgesSlider.Value = Math.Clamp(_target.NeuralEdgesPerNode, 2, 6);
+        NeuralCCSlider.Value = Math.Clamp(_target.NeuralCCDensity, 0.1f, 1.0f);
+        NeuralCamSpeedSlider.Value = Math.Clamp(_target.NeuralCameraOrbitSpeed, 0.01f, 0.2f);
+        NeuralCamYSlider.Value = Math.Clamp(_target.NeuralCameraYAmplitude, 0.0f, 1.0f);
+
+        SceneBox.SelectionChanged += OnSceneChanged;
+        UpdatePanelsVisibility(currentScene);
     }
 
     private void OnResetDefaults(object? sender, RoutedEventArgs e)
@@ -107,6 +130,12 @@ public partial class SettingsWindow : Window
         CameraYSlider.Value = 0.4;
         AmbientSlider.Value = 400;
         BurstSlider.Value = 120;
+        SceneBox.SelectedIndex = 1;   // spike
+        NeuralNodesSlider.Value = 800;
+        NeuralEdgesSlider.Value = 4;
+        NeuralCCSlider.Value = 0.3;
+        NeuralCamSpeedSlider.Value = 0.05;
+        NeuralCamYSlider.Value = 0.4;
         HideAllErrors();
     }
 
@@ -129,6 +158,13 @@ public partial class SettingsWindow : Window
         if (exeErr is not null || projErr is not null || rulesErr is not null)
             return; // stay open, user fixes the field
 
+        var sceneTag = (SceneBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "spike";
+        _target.VisualizerScene = sceneTag;
+        _target.NeuralNodesPerHemisphere = (int)NeuralNodesSlider.Value;
+        _target.NeuralEdgesPerNode = (int)NeuralEdgesSlider.Value;
+        _target.NeuralCCDensity = (float)NeuralCCSlider.Value;
+        _target.NeuralCameraOrbitSpeed = (float)NeuralCamSpeedSlider.Value;
+        _target.NeuralCameraYAmplitude = (float)NeuralCamYSlider.Value;
         // Validation passed — mutate the shared AppSettings and persist.
         _target.GodotExePath = exePath;
         _target.GodotProjectPath = projectPath;
@@ -141,6 +177,18 @@ public partial class SettingsWindow : Window
         _target.BurstParticleCount = (int)BurstSlider.Value;
         _target.Save();
         Close(true);
+    }
+
+    private void OnSceneChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        var tag = (SceneBox.SelectedItem as ComboBoxItem)?.Tag as string ?? "spike";
+        UpdatePanelsVisibility(tag);
+    }
+
+    private void UpdatePanelsVisibility(string scene)
+    {
+        SpikeTuningPanel.IsVisible = scene == "spike";
+        NeuralTuningPanel.IsVisible = scene == "neural";
     }
 
     // ── Validators ──────────────────────────────────────────────────

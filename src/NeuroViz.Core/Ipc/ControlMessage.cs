@@ -44,4 +44,19 @@ public sealed class SetVisualConfigPayload
     [Key(1)] public float CameraYAmplitude { get; init; }
     [Key(2)] public int AmbientParticleCount { get; init; }
     [Key(3)] public int BurstParticleCount { get; init; }
+    [Key(4)] public float NeuralCameraOrbitSpeed { get; init; }
+    [Key(5)] public float NeuralCameraYAmplitude { get; init; }
+}
+
+// N.9: scene switch + topology params. Sent when the user changes the
+// scene ComboBox or on Launch. Topology params travel with the scene
+// switch (not SetVisualConfig) because they take effect at _Ready of
+// the new scene, not live.
+[MessagePackObject]
+public sealed class SetVisualizerScenePayload
+{
+    [Key(0)] public string Scene { get; init; } = "spike";
+    [Key(1)] public int NeuralNodesPerHemisphere { get; init; }
+    [Key(2)] public int NeuralEdgesPerNode { get; init; }
+    [Key(3)] public float NeuralCCDensity { get; init; }
 }

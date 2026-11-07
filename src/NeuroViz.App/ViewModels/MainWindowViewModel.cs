@@ -482,6 +482,15 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             CameraYAmplitude = Settings.CameraYAmplitude,
             AmbientParticleCount = Settings.AmbientParticleCount,
             BurstParticleCount = Settings.BurstParticleCount,
+            NeuralCameraOrbitSpeed = Settings.NeuralCameraOrbitSpeed,
+            NeuralCameraYAmplitude = Settings.NeuralCameraYAmplitude,
+        });
+        _ipcServer.SendVisualizerScene(new SetVisualizerScenePayload
+        {
+            Scene = Settings.VisualizerScene,
+            NeuralNodesPerHemisphere = Settings.NeuralNodesPerHemisphere,
+            NeuralEdgesPerNode = Settings.NeuralEdgesPerNode,
+            NeuralCCDensity = Settings.NeuralCCDensity,
         });
 
         // Проверяем через 750 мс: если Godot упал, показываем код выхода.
@@ -567,6 +576,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         // re-detection of already-analyzed regions.
         if (_projectSource == ProjectSource.Live)
             _pipeline?.ResetForSeek(oldPos, seconds);
+    }
+
+    public void ApplyVisualizerScene(string scene)
+    {
+        Settings.VisualizerScene = scene;
+        Settings.Save();
+        _ipcServer.SendVisualizerScene(new SetVisualizerScenePayload
+        {
+            Scene = scene,
+            NeuralNodesPerHemisphere = Settings.NeuralNodesPerHemisphere,
+            NeuralEdgesPerNode = Settings.NeuralEdgesPerNode,
+            NeuralCCDensity = Settings.NeuralCCDensity,
+        });
+        StatusText = $"Visualizer scene → {scene} (sent to running Godot)";
     }
 
     public async Task SaveProjectAsync(string targetPath)

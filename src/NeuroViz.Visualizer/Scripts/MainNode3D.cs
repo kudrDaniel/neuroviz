@@ -136,6 +136,13 @@ public partial class MainNode3D : Node3D
             return;
         }
 
+        if (_ipc.PendingScenePath is { } pendingPath)
+        {
+            _ipc.ClearPendingScene();
+            GetTree().ChangeSceneToFile(pendingPath);
+            return;
+        }
+
         var frame = _ipc.GetLatestFrame();
         int contCount = 0;
         if (frame != null)

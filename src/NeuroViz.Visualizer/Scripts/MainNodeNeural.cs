@@ -70,8 +70,8 @@ public partial class MainNodeNeural : Node3D
     // these to Settings; for now they are constants.
     private Camera3D _camera = null!;
     private double _visualTime;
-    private float _cameraOrbitSpeed = 0.05f;
-    private float _cameraYAmplitude = 0.4f;
+    private float _cameraOrbitSpeed = NeuralSceneConfig.CameraOrbitSpeed;
+    private float _cameraYAmplitude = NeuralSceneConfig.CameraYAmplitude;
 
     private const float WaveDuration = 0.6f;
     private const float WavePulseDuration = 0.4f;
@@ -168,10 +168,10 @@ public partial class MainNodeNeural : Node3D
     public override void _Ready()
     {
         _topology = NeuralTopology.Generate(
-            nodesPerHemisphere: 800,
-            edgesPerNode: 4,
-            ccDensity: 0.3f,
-            seed: 42);
+    nodesPerHemisphere: NeuralSceneConfig.NodesPerHemisphere,
+    edgesPerNode: NeuralSceneConfig.EdgesPerNode,
+    ccDensity: NeuralSceneConfig.CCDensity,
+    seed: 42);
 
         int cc = _topology.Edges.Count(e => e.IsCrossCallosum);
         GD.Print($"[Neural] Generated: {_topology.Nodes.Count} nodes, " +
@@ -222,6 +222,7 @@ public partial class MainNodeNeural : Node3D
         AddChild(_fpsLabel);
 
         _ipc = new IpcClient();
+        _ipc.VisualConfigReceived += OnVisualConfigReceived;
         _ipc.Start();
 
         // B1: initial snapshot — state before any restructure. Seek to any
@@ -498,6 +499,13 @@ public partial class MainNodeNeural : Node3D
         if (!_ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
+            return;
+        }
+
+        if (_ipc.PendingScenePath is { } pendingPath)
+        {
+            _ipc.ClearPendingScene();
+            GetTree().ChangeSceneToFile(pendingPath);
             return;
         }
 
@@ -1306,7 +1314,7 @@ public partial class MainNodeNeural : Node3D
                          && _topology.Nodes[j].Layer == layer
                          && _topology.Nodes[j].Hemisphere == hemi)
                 .OrderBy(j => (_topology.Nodes[j].Position - pos).LengthSquared())
-                .Take(4)
+                .Take(NeuralSceneConfig.EdgesPerNode)
                 .ToList();
 
             foreach (int j in nearest)
@@ -1562,5 +1570,27 @@ public partial class MainNodeNeural : Node3D
         }
     }
 
-    public override void _ExitTree() => _ipc.Dispose();
+    private void OnVisualConfigReceived(NeuroViz.Core.Ipc.SetVisualConfigPayload p)
+    {
+        // Live tuning via SetVisualConfig. Same payload as spike uses, but
+        // neural reads the NeuralCamera* fields (N.9) — the two scenes have
+        // independent camera tunings so switching scene doesn't drag one's
+        // settings into the other.
+        //
+        // Topology params (node count, edges/node, CC density) travel with
+        // SetVisualizerScene, not SetVisualConfig — they only apply at scene
+        // rebuild, not live. Ignored here.
+        _cameraOrbitSpeed = Mathf.Clamp(p.NeuralCameraOrbitSpeed, 0.01f, 0.2f);
+        _cameraYAmplitude = Mathf.Clamp(p.NeuralCameraYAmplitude, 0.0f, 1.0f);
+
+        // Neural ignores ambient/burst particle counts — those are spike-
+        // specific. If neural grows its own particle tunables later, extend
+        // the payload and wire them here.
+    }
+
+    public override void _ExitTree()
+    {
+        _ipc.VisualConfigReceived -= OnVisualConfigReceived;
+        _ipc.Dispose();
+    }
 }

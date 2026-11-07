@@ -85,6 +85,13 @@ public partial class MainNode : Node2D
             return;
         }
 
+        if (_ipc.PendingScenePath is { } pendingPath)
+        {
+            _ipc.ClearPendingScene();
+            GetTree().ChangeSceneToFile(pendingPath);
+            return;
+        }
+
         var frame = _ipc.GetLatestFrame();
 
         if (frame != null)

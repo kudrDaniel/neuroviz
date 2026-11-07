@@ -2,7 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="NeuroViz.App.Views.SettingsWindow"
         Title="NeuroViz — Settings"
-        Width="640" Height="780"
+        Width="640" Height="900"
         WindowStartupLocation="CenterOwner"
         CanResize="False"
         Background="#FF14141A">
@@ -15,7 +15,7 @@
                Foreground="#FF8FA6C0" Margin="0,0,0,16" />
 
     <!-- Form -->
-    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+    <Grid Grid.Row="1" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
           ColumnDefinitions="*,Auto">
 
       <!-- Godot executable -->
@@ -66,54 +66,62 @@
                 x:Name="AlwaysOnTopBox"
                 Content="Always on top of other windows"
                 Foreground="#FFE0E0E8" Margin="0,8,0,0" />
-      <!-- 3D visualizer tuning (2.4f) -->
+      <!-- N.9: scene selector + per-scene tuning -->
       <TextBlock Grid.Row="12" Grid.ColumnSpan="2"
-                 Text="3D visualizer tuning"
+                 Text="Visualizer scene"
                  Foreground="#FFE0E0E8" Margin="0,16,0,4" />
+      <ComboBox Grid.Row="13" Grid.ColumnSpan="2"
+                x:Name="SceneBox" MinWidth="200" HorizontalAlignment="Left">
+        <ComboBoxItem Content="2D (node_2d.tscn)" Tag="2d" />
+        <ComboBoxItem Content="Spike — 3D sphere (spike.tscn)" Tag="spike" />
+        <ComboBoxItem Content="Neural — 2-hemisphere network (neural.tscn)" Tag="neural" />
+      </ComboBox>
 
-      <TextBlock Grid.Row="13" Grid.Column="0"
-                 Text="Camera orbit speed (rad/s, 0.01–0.2)"
-                 Foreground="#FF8FA6C0" VerticalAlignment="Center" />
-      <TextBlock Grid.Row="13" Grid.Column="1"
-                 Text="{Binding #CameraOrbitSlider.Value, StringFormat='{}{0:F2}'}"
-                 Foreground="#FFE0E0E8" VerticalAlignment="Center"
-                 HorizontalAlignment="Right" />
-      <Slider Grid.Row="14" Grid.ColumnSpan="2"
-              x:Name="CameraOrbitSlider"
-              Minimum="0.01" Maximum="0.2" TickFrequency="0.01" />
+      <!-- Spike tuning (visible when scene = spike) -->
+      <StackPanel Grid.Row="14" Grid.ColumnSpan="2" x:Name="SpikeTuningPanel" IsVisible="True">
+        <TextBlock Text="Spike tuning" Foreground="#FFE0E0E8" Margin="0,16,0,4" />
+        <TextBlock Text="Camera orbit speed (rad/s, 0.01–0.2)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #CameraOrbitSlider.Value, StringFormat='{}{0:F2}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="CameraOrbitSlider" Minimum="0.01" Maximum="0.2" TickFrequency="0.01" />
+        <TextBlock Text="Camera Y amplitude (0.0–1.0)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #CameraYSlider.Value, StringFormat='{}{0:F2}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="CameraYSlider" Minimum="0.0" Maximum="1.0" TickFrequency="0.05" />
+        <TextBlock Text="Ambient particles (20–1000)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #AmbientSlider.Value, StringFormat='{}{0:F0}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="AmbientSlider" Minimum="20" Maximum="1000" TickFrequency="10" />
+        <TextBlock Text="Burst particles (20–500)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #BurstSlider.Value, StringFormat='{}{0:F0}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="BurstSlider" Minimum="20" Maximum="500" TickFrequency="10" />
+      </StackPanel>
 
-      <TextBlock Grid.Row="15" Grid.Column="0"
-                 Text="Camera Y amplitude (0.0–1.0)"
-                 Foreground="#FF8FA6C0" VerticalAlignment="Center" />
-      <TextBlock Grid.Row="15" Grid.Column="1"
-                 Text="{Binding #CameraYSlider.Value, StringFormat='{}{0:F2}'}"
-                 Foreground="#FFE0E0E8" VerticalAlignment="Center"
-                 HorizontalAlignment="Right" />
-      <Slider Grid.Row="16" Grid.ColumnSpan="2"
-              x:Name="CameraYSlider"
-              Minimum="0.0" Maximum="1.0" TickFrequency="0.05" />
-
-      <TextBlock Grid.Row="17" Grid.Column="0"
-                 Text="Ambient particles (20–1000)"
-                 Foreground="#FF8FA6C0" VerticalAlignment="Center" />
-      <TextBlock Grid.Row="17" Grid.Column="1"
-                 Text="{Binding #AmbientSlider.Value, StringFormat='{}{0:F0}'}"
-                 Foreground="#FFE0E0E8" VerticalAlignment="Center"
-                 HorizontalAlignment="Right" />
-      <Slider Grid.Row="18" Grid.ColumnSpan="2"
-              x:Name="AmbientSlider"
-              Minimum="20" Maximum="1000" TickFrequency="10" />
-
-      <TextBlock Grid.Row="19" Grid.Column="0"
-                 Text="Burst particles (20–500)"
-                 Foreground="#FF8FA6C0" VerticalAlignment="Center" />
-      <TextBlock Grid.Row="19" Grid.Column="1"
-                 Text="{Binding #BurstSlider.Value, StringFormat='{}{0:F0}'}"
-                 Foreground="#FFE0E0E8" VerticalAlignment="Center"
-                 HorizontalAlignment="Right" />
-      <Slider Grid.Row="20" Grid.ColumnSpan="2"
-              x:Name="BurstSlider"
-              Minimum="20" Maximum="500" TickFrequency="10" />
+      <!-- Neural tuning (visible when scene = neural) -->
+      <StackPanel Grid.Row="15" Grid.ColumnSpan="2" x:Name="NeuralTuningPanel" IsVisible="False">
+        <TextBlock Text="Neural tuning" Foreground="#FFE0E0E8" Margin="0,16,0,4" />
+        <TextBlock Text="Nodes per hemisphere (200–1500)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #NeuralNodesSlider.Value, StringFormat='{}{0:F0}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="NeuralNodesSlider" Minimum="200" Maximum="1500" TickFrequency="50" />
+        <TextBlock Text="Edges per node (2–6)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #NeuralEdgesSlider.Value, StringFormat='{}{0:F0}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="NeuralEdgesSlider" Minimum="2" Maximum="6" TickFrequency="1" />
+        <TextBlock Text="CC density (0.1–1.0)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #NeuralCCSlider.Value, StringFormat='{}{0:F2}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="NeuralCCSlider" Minimum="0.1" Maximum="1.0" TickFrequency="0.05" />
+        <TextBlock Text="Camera orbit speed (rad/s, 0.01–0.2)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #NeuralCamSpeedSlider.Value, StringFormat='{}{0:F2}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="NeuralCamSpeedSlider" Minimum="0.01" Maximum="0.2" TickFrequency="0.01" />
+        <TextBlock Text="Camera Y amplitude (0.0–1.0)" Foreground="#FF8FA6C0" Margin="0,8,0,2" />
+        <TextBlock Text="{Binding #NeuralCamYSlider.Value, StringFormat='{}{0:F2}'}"
+                   Foreground="#FFE0E0E8" HorizontalAlignment="Right" />
+        <Slider x:Name="NeuralCamYSlider" Minimum="0.0" Maximum="1.0" TickFrequency="0.05" />
+      </StackPanel>
 
     </Grid>
 
