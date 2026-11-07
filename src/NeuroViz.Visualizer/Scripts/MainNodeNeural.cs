@@ -13,6 +13,7 @@ public partial class MainNodeNeural : Node3D
     private IpcClient _ipc = null!;
     private NeuralTopology _topology = null!;
     private MultiMesh _nodeMultimesh = null!;
+    private Node3D _sceneRoot = null!;
     private Label _fpsLabel = null!;
 
     // N.3: activation state and hop-cascade queue.
@@ -59,6 +60,21 @@ public partial class MainNodeNeural : Node3D
                  $"{_topology.Edges.Count} edges ({cc} CC).");
 
         SetupCameraAndLight();
+
+        // N.2-fix2: uniform 2× scale of the entire structure, without moving
+        // the camera. All mesh-bearing nodes (nodes, intra edges, CC edges)
+        // become children of SceneRoot; camera/light/env stay on `this`.
+        // Position offset -1.03 X keeps the structure's centroid at the same
+        // world coordinate the camera already aims at, so the framing is the
+        // same as before — the structure just fills more of it.
+        _sceneRoot = new Node3D
+        {
+            Name = "SceneRoot",
+            Position = new Vector3(-1.03f, 0, 0),
+            Scale = new Vector3(2f, 2f, 2f),
+        };
+        AddChild(_sceneRoot);
+
         BuildNodeMesh();
         BuildIntraEdgeMesh();
         BuildCCEdgeMesh();
@@ -88,7 +104,7 @@ public partial class MainNodeNeural : Node3D
             LightEnergy = 1.3f,
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
-            DirectionalShadowMaxDistance = 6.0f,   // covers the wider X span
+            DirectionalShadowMaxDistance = 10.0f,   // covers the wider X span
             ShadowBias = 0.03f,
             ShadowNormalBias = 1.0f,
         });
@@ -137,7 +153,7 @@ public partial class MainNodeNeural : Node3D
             InstanceCount = _topology.Nodes.Count,
         };
 
-        AddChild(new MultiMeshInstance3D
+        _sceneRoot.AddChild(new MultiMeshInstance3D
         {
             Multimesh = _nodeMultimesh,
             MaterialOverride = mat,
@@ -172,7 +188,7 @@ public partial class MainNodeNeural : Node3D
             colors[i * 2 + 1] = color;
         }
 
-        AddChild(new MeshInstance3D
+        _sceneRoot.AddChild(new MeshInstance3D
         {
             Mesh = MakeLineMesh(vertices, colors),
             MaterialOverride = LineMaterial(),
@@ -209,7 +225,7 @@ public partial class MainNodeNeural : Node3D
             }
         }
 
-        AddChild(new MeshInstance3D
+        _sceneRoot.AddChild(new MeshInstance3D
         {
             Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray()),
             MaterialOverride = LineMaterial(),
