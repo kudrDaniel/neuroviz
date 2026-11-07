@@ -75,6 +75,8 @@ public partial class MainNodeNeural : Node3D
     // these to Settings; for now they are constants.
     private Camera3D _camera = null!;
     private double _visualTime;
+    private double _waveVisualStart = double.NegativeInfinity;
+    private double _restructureVisualStart = double.NegativeInfinity;
     private float _cameraOrbitSpeed = NeuralSceneConfig.CameraOrbitSpeed;
     private float _cameraYAmplitude = NeuralSceneConfig.CameraYAmplitude;
 
@@ -501,6 +503,8 @@ public partial class MainNodeNeural : Node3D
     {
         _ipc.DrainMainThreadActions();
 
+        _visualTime += delta;
+
         if (_ipc.PendingScenePath is { } pendingPath)
         {
             _ipc.ClearPendingScene();
@@ -559,9 +563,10 @@ public partial class MainNodeNeural : Node3D
                 if (rel.SetAtSeconds > _lastReleaseSetAt + 0.001)
                 {
                     _lastReleaseSetAt = rel.SetAtSeconds;
-                    _waveStartTime = rel.SetAtSeconds;
+                    _waveStartTime = rel.SetAtSeconds;             // audio clock — snapshot/diagnostics
+                    _waveVisualStart = _visualTime;                // visual clock — animation
                     _waveAmplitude = Mathf.Clamp(rel.Value * WaveAmplitude, 0f, 0.25f);
-                    _wasWaveActive = false;  // force reactivation this frame
+                    _wasWaveActive = false;
                 }
             }
 
@@ -671,17 +676,18 @@ public partial class MainNodeNeural : Node3D
         // centre outward. Nonuniformity (some nodes arrive early, some late)
         // is driven by (1 - harmonicity): clean tonal material → ordered front
         // like a water ripple; noisy material → chaotic front like spreading fire.
-        float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
 
         float targetFov = 75f + shiver * 8f;
         _camera.Fov = Mathf.Lerp(_camera.Fov, targetFov, 1f - Mathf.Exp(-8f * (float)delta));
 
-        UpdateNodeTransforms(nowClock, nonuniformity);
+
+        float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
+        UpdateNodeTransforms(nonuniformity);
 
         UpdateNodeColors(pitch);
 
         if (_restructureActive)
-            TickRestructure(nowClock);
+            TickRestructure();
 
         // CC bundles: each layer's brightness tracks its band_energy. Range
         // [0.5, 2.0] — dimmer than baseline at silence, brighter than baseline
@@ -721,7 +727,6 @@ public partial class MainNodeNeural : Node3D
             $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2} | " +
             $"vad: {_smoothVad:F2} | smr: {_smoothSmr:F2}";
 
-        _visualTime += delta;
         UpdateIdleCamera();
 
         // P2-A preview capture — was missing in neural (added in N.9-fix3).
@@ -796,12 +801,19 @@ public partial class MainNodeNeural : Node3D
     /// per-frame SetInstanceColor in UpdateNodeColors — 2 writes per node
     /// total, well within 60 FPS budget.
     /// </summary>
-    private void UpdateNodeTransforms(double nowClock, float nonuniformity)
+    private void UpdateNodeTransforms(float nonuniformity)
     {
-        float nowF = (float)nowClock;
-        float startF = (float)_waveStartTime;
-        bool waveActive = nowF > startF - MaxNonuniformity
-                       && nowF < startF + WaveDuration + WavePulseDuration + MaxNonuniformity;
+        // N.10-fix: wave progression uses visual clock (delta-advanced,
+        // 60 Hz), not audio clock (MMF, ~25–50 Hz from BASS DSP block
+        // size). At audio-clock sample rate the wave position changes
+        // in ~2-frame steps, rendered at 60 FPS → visible stutter.
+        // During playback audio and visual clock run 1:1, so wave timing
+        // is unchanged; during pause the wave finishes at wall rate
+        // instead of freezing mid-pulse, which is the better UX anyway.
+        float nowVisual = (float)_visualTime;
+        float waveStartVisual = (float)_waveVisualStart;
+        bool waveActive = nowVisual > waveStartVisual - MaxNonuniformity
+                       && nowVisual < waveStartVisual + WaveDuration + WavePulseDuration + MaxNonuniformity;
 
         float baseScale = 1.0f - _smoothSmr * 0.15f;
         if (float.IsNaN(baseScale) || float.IsInfinity(baseScale))
@@ -812,12 +824,7 @@ public partial class MainNodeNeural : Node3D
             nonuniformity = 0f;
 
         bool scaleChanged = Mathf.Abs(baseScale - _lastAppliedScale) > 1e-4f;
-        // N.7-fix: restructure moves node positions every frame. Without
-        // this term, UpdateNodeTransforms would skip the 1600 writes on
-        // frames that have no wave and no speech-scale change — the nodes
-        // would not visibly move during the restructure transition.
-        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged
-                         || _restructureActive;
+        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged || _restructureActive;
 
         if (needsRewrite)
         {
@@ -826,9 +833,6 @@ public partial class MainNodeNeural : Node3D
 
             for (int i = 0; i < _topology.Nodes.Count; i++)
             {
-                // Use the topology position directly — this is what
-                // BuildNodeMesh used to place the node initially, so it's
-                // known-good by the time _Process runs.
                 var basePos = _topology.Nodes[i].Position;
                 if (!IsFinite(basePos))
                 {
@@ -844,21 +848,12 @@ public partial class MainNodeNeural : Node3D
 
                 if (waveActive)
                 {
-                    // Compute distance on the spot, not from _nodeDistNorm.
-                    // _nodeDistNorm came from _maxNodeDist which was computed
-                    // in PrecomputeNodeWaveData — a prior bug (N.4-fix4)
-                    // showed that _maxNodeDist could end up 0 when
-                    // _nodeBasePos was not populated correctly, which made
-                    // every _nodeDistNorm[i] equal to 0 and collapsed the
-                    // wave into a single global pulse. Computing distance
-                    // here from the actual topology position eliminates
-                    // that failure mode entirely.
                     float dist = (basePos - StructureCenter).Length();
                     float distNorm = Mathf.Clamp(dist / 1.0f, 0f, 1f);
 
-                    float arrival = startF + distNorm * WaveDuration
+                    float arrival = waveStartVisual + distNorm * WaveDuration
                                   + _nodePhase[i] * nonuniformity;
-                    float el = nowF - arrival;
+                    float el = nowVisual - arrival;
                     float pulse = 0f;
                     if (el > 0f && el < WavePulseDuration)
                         pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
@@ -882,7 +877,7 @@ public partial class MainNodeNeural : Node3D
         {
             foreach (var m in _waveReceivers)
             {
-                m.SetShaderParameter("wave_start", startF);
+                m.SetShaderParameter("wave_start", waveStartVisual);
                 m.SetShaderParameter("wave_amplitude", _waveAmplitude);
                 m.SetShaderParameter("wave_nonuniformity", nonuniformity);
             }
@@ -896,7 +891,7 @@ public partial class MainNodeNeural : Node3D
             _waveAmplitude = 0f;
         }
         foreach (var m in _waveReceivers)
-            m.SetShaderParameter("current_time", nowF);
+            m.SetShaderParameter("current_time", nowVisual);
     }
 
     /// <summary>
@@ -1108,6 +1103,7 @@ public partial class MainNodeNeural : Node3D
         _lastSeedTime = double.NegativeInfinity;
         _lastFluxFlashTime = double.NegativeInfinity;
         _waveStartTime = double.NegativeInfinity;
+        _waveVisualStart = double.NegativeInfinity;
         _waveAmplitude = 0f;
 
         // Zero activation — a fading cascade from before the seek would
@@ -1171,7 +1167,8 @@ public partial class MainNodeNeural : Node3D
         };
 
         _restructureActive = true;
-        _restructureStartTime = nowClock;
+        _restructureStartTime = nowClock;              // audio clock — cooldown check
+        _restructureVisualStart = _visualTime;          // visual clock — animation
         _restructureTargets.Clear();
         _restructureStartPositions.Clear();
 
@@ -1292,12 +1289,15 @@ public partial class MainNodeNeural : Node3D
         return new Vector3(targetX, finalYZ.X, finalYZ.Y);
     }
 
-    private void TickRestructure(double nowClock)
+    private void TickRestructure()
     {
+        // N.10-fix: same clock-domain fix as UpdateNodeTransforms — 2.5 s
+        // motion was sampled at audio clock rate (25–50 Hz), rendered at
+        // 60 FPS → stutter. Now uses visual clock.
         float t = Mathf.Clamp(
-            (float)((nowClock - _restructureStartTime) / RestructureDuration),
+            (float)(_visualTime - _restructureVisualStart) / RestructureDuration,
             0f, 1f);
-        float eased = t * t * (3f - 2f * t);   // smoothstep, ease-in-out
+        float eased = t * t * (3f - 2f * t);
 
         float maxDist = 0f;
         foreach (var kvp in _restructureTargets)
@@ -1306,11 +1306,6 @@ public partial class MainNodeNeural : Node3D
             _topology.Nodes[i].Position =
                 _restructureStartPositions[i].Lerp(kvp.Value, eased);
             _nodeBasePos[i] = _topology.Nodes[i].Position;
-            // Phase is derived from position (HashPhase). During restructure
-            // the position changes each frame, so the cached phase would go
-            // stale and edges would compute a different phase at the same
-            // endpoint. Recompute per moved node per frame — 480 Sin calls
-            // is nothing.
             _nodePhase[i] = HashPhase(_topology.Nodes[i].Position);
         }
 
@@ -1323,11 +1318,6 @@ public partial class MainNodeNeural : Node3D
         foreach (var m in _waveReceivers)
             m.SetShaderParameter("wave_max_dist", _maxNodeDist);
 
-        // Rebuild meshes every frame so edges stretch with the nodes
-        // during the movement. ~1-2 ms of CPU + one GPU upload per
-        // instance. Intra + CC only; node transforms come from
-        // UpdateNodeTransforms (which already reads _topology.Nodes[i]
-        // .Position directly — see N.4-fix5).
         RebuildIntraEdgeMesh();
         RebuildCCEdgeMesh();
 
@@ -1391,6 +1381,7 @@ public partial class MainNodeNeural : Node3D
         _pending.Clear();
 
         _restructureActive = false;
+        _restructureVisualStart = double.NegativeInfinity;
         _restructureTargets.Clear();
         _restructureStartPositions.Clear();
 
