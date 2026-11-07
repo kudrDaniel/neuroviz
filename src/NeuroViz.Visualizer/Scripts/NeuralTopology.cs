@@ -4,7 +4,7 @@ namespace NeuroViz.Visualizer.Scripts;
 
 public sealed class NeuralNode
 {
-    public Vector3 Position { get; init; }
+    public Vector3 Position { get; set; }
     public int Layer { get; init; }         // 0=Low, 1=Mid, 2=High
     public int Hemisphere { get; init; }    // 0=Left, 1=Right
 }
@@ -19,12 +19,47 @@ public sealed class NeuralEdge
 public sealed class NeuralTopology
 {
     public IReadOnlyList<NeuralNode> Nodes { get; }
-    public IReadOnlyList<NeuralEdge> Edges { get; }
+    private readonly List<NeuralEdge> _edges;
+    public IReadOnlyList<NeuralEdge> Edges => _edges;
 
-    public NeuralTopology(IReadOnlyList<NeuralNode> nodes, IReadOnlyList<NeuralEdge> edges)
+    public NeuralTopology(IReadOnlyList<NeuralNode> nodes, List<NeuralEdge> edges)
     {
         Nodes = nodes;
-        Edges = edges;
+        _edges = edges;
+    }
+
+    public bool HasEdge(int a, int b)
+    {
+        return _edges.Any(e => !e.IsCrossCallosum
+            && ((e.A == a && e.B == b) || (e.A == b && e.B == a)));
+    }
+
+    public void RemoveEdge(int a, int b)
+    {
+        _edges.RemoveAll(e => !e.IsCrossCallosum
+            && ((e.A == a && e.B == b) || (e.A == b && e.B == a)));
+    }
+
+    public void AddEdge(int a, int b, bool isCC)
+    {
+        _edges.Add(new NeuralEdge { A = a, B = b, IsCrossCallosum = isCC });
+    }
+
+    /// <summary>
+    /// Median length of intra edges across the current topology. Used as
+    /// the base for the "too far" threshold when edges break during a
+    /// restructure (Q4). Median is robust to outliers — a few long edges
+    /// from a previous restructure don't skew the baseline.
+    /// </summary>
+    public float ComputeMedianIntraEdgeDistance()
+    {
+        var dists = _edges
+            .Where(e => !e.IsCrossCallosum)
+            .Select(e => (Nodes[e.A].Position - Nodes[e.B].Position).Length())
+            .OrderBy(d => d)
+            .ToList();
+        if (dists.Count == 0) return 1.0f;
+        return dists[dists.Count / 2];
     }
 
     public static NeuralTopology Generate(

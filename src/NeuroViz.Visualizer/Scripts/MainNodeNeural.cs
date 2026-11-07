@@ -52,6 +52,19 @@ public partial class MainNodeNeural : Node3D
     private bool _wasWaveActive;
     private float _lastAppliedScale = 1.0f;
     private bool _loggedBadNodePos;
+
+    // N.7: restructure state.
+    private bool _restructureActive;
+    private double _restructureStartTime;
+    private const float RestructureDuration = 2.5f;
+    private double _lastRestructureTime = double.NegativeInfinity;
+    private readonly Dictionary<int, Vector3> _restructureTargets = new();
+    private readonly Dictionary<int, Vector3> _restructureStartPositions = new();
+
+    // Mesh instances for live rebuild during restructure.
+    private MeshInstance3D _intraMeshInstance = null!;
+    private MeshInstance3D[] _ccMeshInstances = new MeshInstance3D[3];
+
     private const float WaveDuration = 0.6f;
     private const float WavePulseDuration = 0.4f;
     private const float MaxNonuniformity = 0.3f;
@@ -163,13 +176,7 @@ public partial class MainNodeNeural : Node3D
         foreach (var m in _ccMaterials)
             if (m != null) _waveReceivers.Add(m);
 
-        foreach (var m in _waveReceivers)
-        {
-            m.SetShaderParameter("wave_center", StructureCenter);
-            m.SetShaderParameter("wave_max_dist", _maxNodeDist);
-            m.SetShaderParameter("wave_duration", WaveDuration);
-            m.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
-        }
+        UpdateWaveShaderConstants();
 
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
@@ -283,6 +290,16 @@ public partial class MainNodeNeural : Node3D
     // ── Intra edges (single ArrayMesh, PRIMITIVE_LINES) ────────────
     private void BuildIntraEdgeMesh()
     {
+        _intraMeshInstance = new MeshInstance3D
+        {
+            MaterialOverride = _edgeMaterial,
+        };
+        _sceneRoot.AddChild(_intraMeshInstance);
+        RebuildIntraEdgeMesh();
+    }
+
+    private void RebuildIntraEdgeMesh()
+    {
         var intra = _topology.Edges.Where(e => !e.IsCrossCallosum).ToList();
         var vertices = new Vector3[intra.Count * 2];
         var colors = new Color[intra.Count * 2];
@@ -298,11 +315,7 @@ public partial class MainNodeNeural : Node3D
             colors[i * 2 + 1] = color;
         }
 
-        _sceneRoot.AddChild(new MeshInstance3D
-        {
-            Mesh = MakeLineMesh(vertices, colors),
-            MaterialOverride = _edgeMaterial,
-        });
+        _intraMeshInstance.Mesh = MakeLineMesh(vertices, colors);
     }
 
     // ── CC edges (ArrayMesh with quadratic bezier arcs) ────────────
@@ -312,9 +325,26 @@ public partial class MainNodeNeural : Node3D
     // crossed). Arcs give the CC bundle its visual identity.
     private void BuildCCEdgeMesh()
     {
-        // Split CC edges into per-layer buckets. Each bucket gets its own
-        // MeshInstance3D + ShaderMaterial so band_energy.low/mid/high can
-        // drive per-layer bundle brightness without vertex-color rebuilds.
+        // Init materials and empty mesh instances once; RebuildCCEdgeMesh
+        // swaps the Mesh on each instance when topology or positions change.
+        for (int layer = 0; layer < 3; layer++)
+        {
+            var mat = new ShaderMaterial { Shader = _edgeMaterial.Shader };
+            mat.SetShaderParameter("coherence", 1.0f);
+            mat.SetShaderParameter("bundle_energy", 1.0f);
+            _ccMaterials[layer] = mat;
+
+            _ccMeshInstances[layer] = new MeshInstance3D
+            {
+                MaterialOverride = mat,
+            };
+            _sceneRoot.AddChild(_ccMeshInstances[layer]);
+        }
+        RebuildCCEdgeMesh();
+    }
+
+    private void RebuildCCEdgeMesh()
+    {
         var ccByLayer = new List<NeuralEdge>[] { new(), new(), new() };
         foreach (var edge in _topology.Edges.Where(e => e.IsCrossCallosum))
         {
@@ -327,8 +357,6 @@ public partial class MainNodeNeural : Node3D
         for (int layer = 0; layer < 3; layer++)
         {
             var edges = ccByLayer[layer];
-            if (edges.Count == 0) continue;
-
             var vertices = new List<Vector3>(edges.Count * segmentsPerArc * 2);
             var colors = new List<Color>(edges.Count * segmentsPerArc * 2);
 
@@ -350,19 +378,7 @@ public partial class MainNodeNeural : Node3D
                 }
             }
 
-            var mat = new ShaderMaterial { Shader = _edgeMaterial.Shader };
-            // CC uses bundle_energy only; coherence stays at 1.0 so
-            // harmonicity doesn't dim the commisure highways — those are
-            // structural, not tone-quality-driven.
-            mat.SetShaderParameter("coherence", 1.0f);
-            mat.SetShaderParameter("bundle_energy", 1.0f);
-            _ccMaterials[layer] = mat;
-
-            _sceneRoot.AddChild(new MeshInstance3D
-            {
-                Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray()),
-                MaterialOverride = mat,
-            });
+            _ccMeshInstances[layer].Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray());
         }
     }
 
@@ -441,6 +457,8 @@ public partial class MainNodeNeural : Node3D
         }
 
         var frame = _ipc.GetLatestFrame();
+
+        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
         if (frame != null)
         {
             _lastClock = frame.AudioClockSeconds;
@@ -475,6 +493,20 @@ public partial class MainNodeNeural : Node3D
                 }
             }
 
+            // N.7: stream_boundary open → restructure. Cooldown 2 s handled in
+            // StartRestructure. Release is processed above so if both fire on
+            // the same frame, the wave and restructure start together — the wave
+            // hits the moving nodes, and by the time the wave ends the restructure
+            // finishes. Reads as "boundary event: wave + reshape".
+            foreach (var ev in frame.Events)
+            {
+                if (ev.Type == "stream_boundary" && ev.Params.GetValueOrDefault("open", 0f) >= 0.5f)
+                {
+                    float strength = ev.Params.GetValueOrDefault("strength", 0f);
+                    StartRestructure(strength, nowClock);
+                }
+            }
+
             // N.4 continuous
             if (frame.ContinuousParams.TryGetValue("band_energy.low", out var bl)) _contLow = bl;
             if (frame.ContinuousParams.TryGetValue("band_energy.mid", out var bm)) _contMid = bm;
@@ -484,8 +516,6 @@ public partial class MainNodeNeural : Node3D
             if (frame.ContinuousParams.TryGetValue("vad_state", out var vd)) _contVad = vd;
             if (frame.ContinuousParams.TryGetValue("speech_music_ratio", out var sm)) _contSmr = sm;
         }
-
-        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
         // Detect seek / track change: a backward jump > 0.3 s or forward
         // jump > 2.0 s cannot be produced by normal playback (16 ms/frame).
         // Without this, _pending holds items with timestamps from the old
@@ -574,6 +604,9 @@ public partial class MainNodeNeural : Node3D
 
         UpdateNodeColors(pitch);
 
+        if (_restructureActive)
+            TickRestructure(nowClock);
+
         // CC bundles: each layer's brightness tracks its band_energy. Range
         // [0.5, 2.0] — dimmer than baseline at silence, brighter than baseline
         // at saturation. Layer 0/1/2 = Low/Mid/High CC commisure.
@@ -604,7 +637,8 @@ public partial class MainNodeNeural : Node3D
 
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
-            $"Pending: {_pending.Count} | Active: {activeCount}\n" +
+            $"Pending: {_pending.Count} | Active: {activeCount} | " +
+            (_restructureActive ? "RESTRUCT" : "idle") + "\n" +
             $"wave: {(_wasWaveActive ? $"ACTIVE {_waveAmplitude:F2}" : "idle")} | " +
             $"nonunif: {nonuniformity:F2}\n" +
             $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
@@ -923,7 +957,202 @@ public partial class MainNodeNeural : Node3D
         }
         _neuroWriteIndex = 0;
 
+        // N.7: cancel any in-flight restructure. Snap moving nodes to their
+        // targets so the network isn't left frozen mid-air; a seek is a jump,
+        // not a pause-and-rewind of the restructure.
+        if (_restructureTargets.Count > 0)
+        {
+            foreach (var kvp in _restructureTargets)
+            {
+                _topology.Nodes[kvp.Key].Position = kvp.Value;
+                _nodeBasePos[kvp.Key] = kvp.Value;
+            }
+            BuildAdjacency();
+            PrecomputeNodeWaveData();
+            UpdateWaveShaderConstants();
+            RebuildIntraEdgeMesh();
+            RebuildCCEdgeMesh();
+        }
+        _restructureActive = false;
+        _restructureTargets.Clear();
+        _restructureStartPositions.Clear();
+
         GD.Print($"[Neural] Timeline reset at clock={nowClock:F2} (seek or track change)");
+    }
+
+    private void StartRestructure(float strength, double nowClock)
+    {
+        if (_restructureActive) return;
+        if (nowClock - _lastRestructureTime < 2.0) return;
+        _lastRestructureTime = nowClock;
+
+        _restructureActive = true;
+        _restructureStartTime = nowClock;
+        _restructureTargets.Clear();
+        _restructureStartPositions.Clear();
+
+        float fraction = strength > 0.01f
+            ? Mathf.Clamp(0.15f + strength * 0.02f, 0.15f, 0.45f)
+            : 0.30f;
+        int moveCount = (int)(fraction * _topology.Nodes.Count);
+
+        var rng = new Random();
+        var indices = Enumerable.Range(0, _topology.Nodes.Count)
+            .OrderBy(_ => rng.Next())
+            .Take(moveCount);
+
+        foreach (int i in indices)
+        {
+            var node = _topology.Nodes[i];
+            _restructureStartPositions[i] = node.Position;
+            _restructureTargets[i] = ComputeRestructureTarget(node, rng);
+        }
+
+        GD.Print($"[Neural] Restructure: {moveCount} nodes moving " +
+                 $"(strength={strength:F1}, fraction={fraction:F2})");
+    }
+
+    private Vector3 ComputeRestructureTarget(NeuralNode node, Random rng)
+    {
+        // Q1: stay within the node's layer X-range. Layers partition
+        // X by hemisphere; mirrored for hemisphere 1.
+        bool left = node.Hemisphere == 0;
+        float xMin, xMax;
+        switch (node.Layer)
+        {
+            case 0: xMin = 0.10f; xMax = 0.56f; break;
+            case 1: xMin = 0.56f; xMax = 0.80f; break;
+            default: xMin = 0.80f; xMax = 0.96f; break;
+        }
+        if (!left)
+        {
+            (xMin, xMax) = (2f - xMax, 2f - xMin);
+        }
+
+        // Q3: up to 50% of layer X-extent, same magnitude in YZ.
+        float xRange = xMax - xMin;
+        var jitter = new Vector3(
+            (float)(rng.NextDouble() * 2 - 1) * xRange * 0.5f,
+            (float)(rng.NextDouble() * 2 - 1) * 0.25f,
+            (float)(rng.NextDouble() * 2 - 1) * 0.25f);
+
+        var target = node.Position + jitter;
+        target.X = Mathf.Clamp(target.X, Mathf.Min(xMin, xMax), Mathf.Max(xMin, xMax));
+
+        // Clamp YZ inside the ellipsoid cross-section at this X.
+        float cx = left ? 0.53f : 1.47f;
+        float a = 0.43f, b = 0.5f, c = 0.5f;
+        float dx = (target.X - cx) / a;
+        float r2 = 1f - dx * dx;
+        if (r2 > 0f)
+        {
+            float rf = Mathf.Sqrt(r2);
+            target.Y = Mathf.Clamp(target.Y, -b * rf, b * rf);
+            target.Z = Mathf.Clamp(target.Z, -c * rf, c * rf);
+        }
+
+        return target;
+    }
+
+    private void TickRestructure(double nowClock)
+    {
+        float t = Mathf.Clamp(
+            (float)((nowClock - _restructureStartTime) / RestructureDuration),
+            0f, 1f);
+        float eased = t * t * (3f - 2f * t);   // smoothstep, ease-in-out
+
+        float maxDist = 0f;
+        foreach (var kvp in _restructureTargets)
+        {
+            int i = kvp.Key;
+            _topology.Nodes[i].Position =
+                _restructureStartPositions[i].Lerp(kvp.Value, eased);
+            _nodeBasePos[i] = _topology.Nodes[i].Position;
+        }
+
+        for (int i = 0; i < _topology.Nodes.Count; i++)
+        {
+            float d = (_topology.Nodes[i].Position - StructureCenter).Length();
+            if (d > maxDist) maxDist = d;
+        }
+        _maxNodeDist = Mathf.Max(maxDist, 1.0f);
+        foreach (var m in _waveReceivers)
+            m.SetShaderParameter("wave_max_dist", _maxNodeDist);
+
+        // Rebuild meshes every frame so edges stretch with the nodes
+        // during the movement. ~1-2 ms of CPU + one GPU upload per
+        // instance. Intra + CC only; node transforms come from
+        // UpdateNodeTransforms (which already reads _topology.Nodes[i]
+        // .Position directly — see N.4-fix5).
+        RebuildIntraEdgeMesh();
+        RebuildCCEdgeMesh();
+
+        if (t >= 1f)
+            FinishRestructure();
+    }
+
+    private void FinishRestructure()
+    {
+        var moved = new HashSet<int>(_restructureTargets.Keys);
+        float threshold = _topology.ComputeMedianIntraEdgeDistance() * 1.5f;
+
+        // Q4: break edges where either endpoint moved and the gap exceeds
+        // the threshold (1.5× the current median).
+        var toRemove = new List<(int a, int b)>();
+        foreach (var edge in _topology.Edges)
+        {
+            if (edge.IsCrossCallosum) continue;
+            if (!moved.Contains(edge.A) && !moved.Contains(edge.B)) continue;
+            var pa = _topology.Nodes[edge.A].Position;
+            var pb = _topology.Nodes[edge.B].Position;
+            if ((pa - pb).Length() > threshold)
+                toRemove.Add((edge.A, edge.B));
+        }
+        foreach (var (a, b) in toRemove) _topology.RemoveEdge(a, b);
+
+        // Q4: K-nearest re-formation, same layer + hemisphere (Q1).
+        int addedCount = 0;
+        foreach (int i in moved)
+        {
+            var pos = _topology.Nodes[i].Position;
+            int layer = _topology.Nodes[i].Layer;
+            int hemi = _topology.Nodes[i].Hemisphere;
+
+            var nearest = Enumerable.Range(0, _topology.Nodes.Count)
+                .Where(j => j != i
+                         && _topology.Nodes[j].Layer == layer
+                         && _topology.Nodes[j].Hemisphere == hemi)
+                .OrderBy(j => (_topology.Nodes[j].Position - pos).LengthSquared())
+                .Take(4)
+                .ToList();
+
+            foreach (int j in nearest)
+            {
+                if (!_topology.HasEdge(i, j))
+                {
+                    _topology.AddEdge(i, j, isCC: false);
+                    addedCount++;
+                }
+            }
+        }
+
+        // Adjacency must be rebuilt — cascade (N.3) follows the new edges.
+        BuildAdjacency();
+        PrecomputeNodeWaveData();
+        UpdateWaveShaderConstants();
+
+        // Cascade in flight was following old edges. Drop it — the seeded
+        // wave will start from a new activation on the next pulse anyway.
+        _pending.Clear();
+
+        _restructureActive = false;
+        _restructureTargets.Clear();
+        _restructureStartPositions.Clear();
+
+        int intraTotal = _topology.Edges.Count(e => !e.IsCrossCallosum);
+        GD.Print($"[Neural] Restructure done: {moved.Count} nodes moved, " +
+                 $"{toRemove.Count} edges broken, {addedCount} edges formed, " +
+                 $"{intraTotal} intra total");
     }
 
     private void SetupNeurotransmitters()
@@ -1084,6 +1313,17 @@ public partial class MainNodeNeural : Node3D
             float scale = Mathf.Sin(t * Mathf.Pi);
             var basis = Basis.Identity.Scaled(new Vector3(scale, scale, scale));
             _neuroMultiMesh.SetInstanceTransform(i, new Transform3D(basis, pos));
+        }
+    }
+
+    private void UpdateWaveShaderConstants()
+    {
+        foreach (var m in _waveReceivers)
+        {
+            m.SetShaderParameter("wave_center", StructureCenter);
+            m.SetShaderParameter("wave_max_dist", _maxNodeDist);
+            m.SetShaderParameter("wave_duration", WaveDuration);
+            m.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
         }
     }
 
