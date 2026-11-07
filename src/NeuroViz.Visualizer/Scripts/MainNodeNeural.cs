@@ -36,6 +36,10 @@ public partial class MainNodeNeural : Node3D
     // N.6: three separate CC materials (one per layer) so each bundle
     // reacts to its own band_energy independently.
     private ShaderMaterial[] _ccMaterials = new ShaderMaterial[3];
+    // N.4-fix3: all materials that must receive wave uniforms (intra + CC).
+    // Without this, CC edges use default wave_start = -1e10 → pulse = 0
+    // → they never move during a release wave.
+    private readonly List<ShaderMaterial> _waveReceivers = new();
 
     // N.4-fix: release wave state.
     private float[] _nodeDistNorm = null!;
@@ -46,6 +50,8 @@ public partial class MainNodeNeural : Node3D
     private float _waveAmplitude;
     private double _lastReleaseSetAt = double.NegativeInfinity;
     private bool _wasWaveActive;
+    private float _lastAppliedScale = 1.0f;
+    private bool _loggedBadNodePos;
     private const float WaveDuration = 0.6f;
     private const float WavePulseDuration = 0.4f;
     private const float MaxNonuniformity = 0.3f;
@@ -150,19 +156,36 @@ public partial class MainNodeNeural : Node3D
         BuildAdjacency();
         _activation = new float[_topology.Nodes.Count];
 
-        PrecomputeNodeWaveData();
+        PrecomputeNodeWaveData();   // ← сначала, чтобы _maxNodeDist был готов
 
-        // Edge shader constants that never change at runtime.
-        _edgeMaterial.SetShaderParameter("wave_center", StructureCenter);
-        _edgeMaterial.SetShaderParameter("wave_max_dist", _maxNodeDist);
-        _edgeMaterial.SetShaderParameter("wave_duration", WaveDuration);
-        _edgeMaterial.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
+        _waveReceivers.Clear();
+        _waveReceivers.Add(_edgeMaterial);
+        foreach (var m in _ccMaterials)
+            if (m != null) _waveReceivers.Add(m);
+
+        foreach (var m in _waveReceivers)
+        {
+            m.SetShaderParameter("wave_center", StructureCenter);
+            m.SetShaderParameter("wave_max_dist", _maxNodeDist);
+            m.SetShaderParameter("wave_duration", WaveDuration);
+            m.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
+        }
 
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
 
         _ipc = new IpcClient();
         _ipc.Start();
+
+        // N.4-fix3 diagnostic: confirm the topology and base positions are
+        // finite before any rendering happens. If this logs "non-finite: N>0",
+        // the topology is corrupt and the rest of the pipeline will collapse
+        // the MultiMesh — go back to N.1.
+        int badPos = 0;
+        for (int i = 0; i < _topology.Nodes.Count; i++)
+            if (!IsFinite(_topology.Nodes[i].Position)) badPos++;
+        GD.Print($"[Neural] Node sanity: {_topology.Nodes.Count} nodes, " +
+                 $"non-finite positions: {badPos}, maxDist={_maxNodeDist:F3}");
     }
 
     // ── Scene basics ───────────────────────────────────────────────
@@ -227,6 +250,17 @@ public partial class MainNodeNeural : Node3D
             UseColors = true,
             Mesh = mesh,
             InstanceCount = _topology.Nodes.Count,
+            // CustomAabb on the MultiMesh overrides Godot's auto-computed AABB.
+            // Auto-AABB is derived from the instance transforms; if any of those
+            // ever become NaN (e.g. a wave factor goes wrong), the whole AABB
+            // becomes NaN and Godot culls the entire MultiMeshInstance3D. With a
+            // fixed AABB covering the structure + wave compression range, the
+            // mesh stays visible even if individual transforms degenerate.
+            // Structure local X: [0.10, 1.90], YZ: [-0.5, 0.5], wave compression
+            // pulls inward so the outer bounds never grow. 0.5 margin.
+            CustomAabb = new Aabb(
+        new Vector3(-0.4f, -1.0f, -1.0f),
+        new Vector3(2.8f, 2.0f, 2.0f)),
         };
 
         _sceneRoot.AddChild(new MultiMeshInstance3D
@@ -648,45 +682,99 @@ public partial class MainNodeNeural : Node3D
         bool waveActive = nowF > startF - MaxNonuniformity
                        && nowF < startF + WaveDuration + WavePulseDuration + MaxNonuniformity;
 
-        // Speech mode: 0 = music (full size), 1 = speech (15% smaller).
         float baseScale = 1.0f - _smoothSmr * 0.15f;
-        var scaleBasis = Basis.Identity.Scaled(
-            new Vector3(baseScale, baseScale, baseScale));
+        if (float.IsNaN(baseScale) || float.IsInfinity(baseScale))
+            baseScale = 1.0f;
+        baseScale = Mathf.Clamp(baseScale, 0.5f, 1.5f);
 
-        for (int i = 0; i < _topology.Nodes.Count; i++)
+        if (float.IsNaN(nonuniformity) || float.IsInfinity(nonuniformity))
+            nonuniformity = 0f;
+
+        bool scaleChanged = Mathf.Abs(baseScale - _lastAppliedScale) > 1e-4f;
+        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged;
+
+        if (needsRewrite)
         {
-            var pos = _nodeBasePos[i];
+            var scaleBasis = Basis.Identity.Scaled(
+                new Vector3(baseScale, baseScale, baseScale));
 
-            if (waveActive)
+            for (int i = 0; i < _topology.Nodes.Count; i++)
             {
-                float arrival = startF + _nodeDistNorm[i] * WaveDuration
-                              + _nodePhase[i] * nonuniformity;
-                float el = nowF - arrival;
-                float pulse = 0f;
-                if (el > 0f && el < WavePulseDuration)
-                    pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
+                // Use the topology position directly — this is what
+                // BuildNodeMesh used to place the node initially, so it's
+                // known-good by the time _Process runs.
+                var basePos = _topology.Nodes[i].Position;
+                if (!IsFinite(basePos))
+                {
+                    if (!_loggedBadNodePos)
+                    {
+                        _loggedBadNodePos = true;
+                        GD.PrintErr($"[Neural] Node[{i}] position not finite: {basePos}");
+                    }
+                    continue;
+                }
 
-                float factor = 1f - _waveAmplitude * pulse;
-                pos = StructureCenter + (_nodeBasePos[i] - StructureCenter) * factor;
+                var pos = basePos;
+
+                if (waveActive)
+                {
+                    // Compute distance on the spot, not from _nodeDistNorm.
+                    // _nodeDistNorm came from _maxNodeDist which was computed
+                    // in PrecomputeNodeWaveData — a prior bug (N.4-fix4)
+                    // showed that _maxNodeDist could end up 0 when
+                    // _nodeBasePos was not populated correctly, which made
+                    // every _nodeDistNorm[i] equal to 0 and collapsed the
+                    // wave into a single global pulse. Computing distance
+                    // here from the actual topology position eliminates
+                    // that failure mode entirely.
+                    float dist = (basePos - StructureCenter).Length();
+                    float distNorm = Mathf.Clamp(dist / 1.0f, 0f, 1f);
+
+                    float arrival = startF + distNorm * WaveDuration
+                                  + _nodePhase[i] * nonuniformity;
+                    float el = nowF - arrival;
+                    float pulse = 0f;
+                    if (el > 0f && el < WavePulseDuration)
+                        pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
+
+                    float factor = 1f - _waveAmplitude * pulse;
+                    if (float.IsNaN(factor) || float.IsInfinity(factor))
+                        factor = 1f;
+                    factor = Mathf.Clamp(factor, 0.5f, 1.5f);
+
+                    var computed = StructureCenter + (basePos - StructureCenter) * factor;
+                    pos = IsFinite(computed) ? computed : basePos;
+                }
+
+                _nodeMultimesh.SetInstanceTransform(i, new Transform3D(scaleBasis, pos));
             }
 
-            _nodeMultimesh.SetInstanceTransform(i, new Transform3D(scaleBasis, pos));
+            _lastAppliedScale = baseScale;
         }
 
         if (waveActive)
         {
-            _edgeMaterial.SetShaderParameter("wave_start", startF);
-            _edgeMaterial.SetShaderParameter("wave_amplitude", _waveAmplitude);
+            foreach (var m in _waveReceivers)
+            {
+                m.SetShaderParameter("wave_start", startF);
+                m.SetShaderParameter("wave_amplitude", _waveAmplitude);
+                m.SetShaderParameter("wave_nonuniformity", nonuniformity);
+            }
             _wasWaveActive = true;
         }
         else if (_wasWaveActive)
         {
-            _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
+            foreach (var m in _waveReceivers)
+                m.SetShaderParameter("wave_amplitude", 0f);
             _wasWaveActive = false;
             _waveAmplitude = 0f;
         }
-        _edgeMaterial.SetShaderParameter("current_time", nowF);
+        foreach (var m in _waveReceivers)
+            m.SetShaderParameter("current_time", nowF);
     }
+
+    private static bool IsFinite(Vector3 v)
+        => float.IsFinite(v.X) && float.IsFinite(v.Y) && float.IsFinite(v.Z);
 
     private void UpdateNodeColors(float pitch)
     {
@@ -751,6 +839,17 @@ public partial class MainNodeNeural : Node3D
             .Lerp(new Color(1.00f, 0.95f, 0.25f), (act - 0.7f) / 0.3f);
     }
 
+    /// <summary>
+    /// Deterministic pseudo-random phase from position, in [-1, 1].
+    /// MUST match neural_edge.gdshader:hash_phase exactly — shared
+    /// endpoints of edges and nodes get identical phase, so they move
+    /// together through the release wave.
+    /// </summary>
+    private static float HashPhase(Vector3 pos)
+    {
+        return MathF.Sin(pos.X * 17f + pos.Y * 23f + pos.Z * 31f);
+    }
+
     private void PrecomputeNodeWaveData()
     {
         int n = _topology.Nodes.Count;
@@ -760,8 +859,6 @@ public partial class MainNodeNeural : Node3D
 
         // Deterministic phase — different seed from _pulseRng so cascade
         // seed choice and wave jitter decorrelate across runs.
-        var waveRng = new Random(1337);
-
         float maxDist = 0f;
         for (int i = 0; i < n; i++)
         {
@@ -769,15 +866,15 @@ public partial class MainNodeNeural : Node3D
             float dist = (_nodeBasePos[i] - StructureCenter).Length();
             if (dist > maxDist) maxDist = dist;
         }
-        _maxNodeDist = maxDist > 1e-6f ? maxDist : 1.0f;
+        // Hard guard: if _topology.Nodes was empty or every position was
+        // (1,0,0), maxDist stays 0 → dist/0 = Infinity in _nodeDistNorm →
+        // NaN arrival in the wave → NaN instance transforms → Godot culls
+        // the entire MultiMesh. Never let _maxNodeDist be <= 0.
+        if (maxDist <= 1e-4f || float.IsNaN(maxDist) || float.IsInfinity(maxDist))
+            maxDist = 1.0f;
+        _maxNodeDist = maxDist;
 
-        for (int i = 0; i < n; i++)
-        {
-            _nodeDistNorm[i] = (_nodeBasePos[i] - StructureCenter).Length() / _maxNodeDist;
-            _nodePhase[i] = (float)(waveRng.NextDouble() * 2.0 - 1.0);   // [-1, 1]
-        }
-
-        GD.Print($"[Neural] Wave precompute: maxDist={_maxNodeDist:F3}");
+        GD.Print($"[Neural] Wave precompute: nodes={n}, maxDist={_maxNodeDist:F3}");
     }
 
     /// <summary>
@@ -807,9 +904,9 @@ public partial class MainNodeNeural : Node3D
         // the shader stops applying any in-flight pulse.
         if (_nodeBasePos is not null)
         {
-            for (int i = 0; i < _nodeBasePos.Length; i++)
+            for (int i = 0; i < _topology.Nodes.Count; i++)
                 _nodeMultimesh.SetInstanceTransform(i,
-                    new Transform3D(Basis.Identity, _nodeBasePos[i]));
+                    new Transform3D(Basis.Identity, _topology.Nodes[i].Position));
         }
         _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
         _wasWaveActive = false;
