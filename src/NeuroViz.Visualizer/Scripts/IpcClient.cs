@@ -230,6 +230,10 @@ public sealed class IpcClient : IDisposable
                 // pending path; each scene's _Process will pick it up on main thread.
                 PendingScenePath = path;
                 break;
+            case "":
+                // Heartbeat from App (N.9-fix2). Ignore silently — not an
+                // unknown kind, not an error.
+                break;
             default:
                 GD.Print($"[IPC] Unknown control kind: {msg.Kind}");
                 break;
