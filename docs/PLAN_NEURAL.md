@@ -104,20 +104,29 @@ LowL MidL HighL│HighR MidR LowR
 При `pulse` срабатывает только если кулдаун прошёл (default 50 мс —
 иначе частый drum'n'bass перегружает каскад).
 
-### Частицы (Q4 = A + B)
+### Частицы (N.5)
 
-**A. Нейротрансмиттеры на рёбрах:** при активации узла, для каждого
-активного ребра (куда каскад переходит), создаётся 1–2 частицы.
-`MultiMeshInstance3D` с mesh = маленький icosahedron (radius 0.015).
-Полёт от `sourcePos` к `targetPos` за 120 мс (совпадает с hop-
-задержкой). При достижении — вклад в `activation[target]`.
+**Neurotransmitters** — `MultiMeshInstance3D` со 200 instance'ами
+маленьких icosphere (radius 0.015, в SceneRoot scale 0.03 effective).
+Триггер: при dequeue каскада (каждый «hop») спавнится 1 частица на
+случайном ребре активированного узла. Летит по прямой за 0.12 s
+(синхронно с hop-задержкой pending'а). Scale profile `sin(πt)` —
+fade in/out без шейдера. Тени включены (маленькие, но заметны на
+освещённой стороне). Пул ring-buffer 200, DropOldest при переполнении.
 
-Максимум одновременных: **200** (bounded, DropOldest). Тени включены —
-на пике каскада узлы подсвечены от пролетающих мешей.
+**Ambient** — `GpuParticles3D`, halo вокруг структуры. 300 частиц,
+lifetime 4 s, emission sphere radius 2.5 (охватывает структуру
+3.6 × 2 × 2). Density = `clamp(0.1 + mid * 0.9, 0.05, 1.0)` от
+`band_energy.mid` — та же кривая что в spike 2.4c. Цвет тёплый
+жёлтый (0.95, 0.70, 0.40), fade в gradient. Тени отключены.
 
-**B. Фон:** ambient-рой как в spike (density от `band_energy.mid`),
-но **без теней** (дорого, незаметно), цвет совпадает с базой
-(холодный синий).
+**Взаимодействие с release wave:** частицы — дети SceneRoot, волна
+смещает сам SceneRoot (в N.4-fix — per-node, но позиции узлов меняются
+внутри SceneRoot). Ambient тоже в SceneRoot → он «плывёт» с волной,
+но neurotransmitters — per-frame position из `_nodeBasePos`, который
+волной не затронут. Значит волна не тянет за собой частицы в полёте.
+Приемлемо: удар release редко совпадает с каскадом. Open question
+для N.6, если понадобится синхронизация.
 
 ### Палитра (N.2-fix, базовая)
 

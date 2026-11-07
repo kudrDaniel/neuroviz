@@ -45,6 +45,29 @@ public partial class MainNodeNeural : Node3D
     private const float WaveAmplitude = 0.15f;
     private static readonly Vector3 StructureCenter = new(1.0f, 0, 0);
 
+    // N.5: particles. Neurotransmitters = small meshes flying along one
+    // random edge per activated node, visualising signal transfer.
+    // Ambient = GpuParticles3D halo around the structure, density from
+    // band_energy.mid.
+    private MultiMesh _neuroMultiMesh = null!;
+    private NeuroParticle[] _neuroParticles = null!;
+    private int _neuroWriteIndex;
+    private GpuParticles3D _ambientParticles = null!;
+    private float _smoothMidOld;   // unused, only to note _smoothMid exists
+
+    private const int NeuroInstanceCount = 200;
+    private const float NeuroDuration = 0.12f;
+    private const float NeuroMeshRadius = 0.015f;
+    private const float TinyScale = 0.0001f;   // effectively invisible, avoids degenerate basis
+
+    private struct NeuroParticle
+    {
+        public Vector3 FromPos;
+        public Vector3 ToPos;
+        public double StartTime;
+        public bool IsActive;
+    }
+
     // N.3: activation state and hop-cascade queue.
     private float[] _activation = null!;
     private List<int>[] _adjacency = null!;
@@ -115,6 +138,8 @@ public partial class MainNodeNeural : Node3D
         BuildNodeMesh();
         BuildIntraEdgeMesh();
         BuildCCEdgeMesh();
+        SetupNeurotransmitters();
+        SetupAmbientParticles();
         BuildAdjacency();
         _activation = new float[_topology.Nodes.Count];
 
@@ -445,8 +470,19 @@ public partial class MainNodeNeural : Node3D
 
             if (intensity * 0.6f > 0.05f)
             {
-                foreach (var nbr in _adjacency[idx])
+                var neighbors = _adjacency[idx];
+                foreach (var nbr in neighbors)
                     _pending.Enqueue((nbr, intensity * 0.6f), at + 0.12);
+
+                // One visual neurotransmitter per hop — a single particle on a
+                // random edge reads as "signal travels along a path" without
+                // visually fanning out. Multiple particles per hop would
+                // saturate the 200-slot pool at drum-n-bass tempo.
+                if (neighbors.Count > 0)
+                {
+                    int chosen = neighbors[_pulseRng.Next(neighbors.Count)];
+                    SpawnNeurotransmitter(idx, chosen, at);
+                }
             }
         }
 
@@ -498,6 +534,14 @@ public partial class MainNodeNeural : Node3D
         _edgeMaterial.SetShaderParameter("current_time", (float)nowClock);
 
         UpdateNodeColors(pitch);
+
+        UpdateNeurotransmitters(nowClock);
+
+        // Ambient density from band_energy.mid. Same curve as spike (0.05 floor
+        // so halo is visible on instrumental intro; 1.0 at saturated mid).
+        float targetRatio = Mathf.Clamp(0.1f + _smoothMid * 0.9f, 0.05f, 1.0f);
+        _ambientParticles.AmountRatio =
+            Mathf.Lerp(_ambientParticles.AmountRatio, targetRatio, kb);
 
         int activeCount = 0;
         for (int i = 0; i < _activation.Length; i++)
@@ -681,7 +725,164 @@ public partial class MainNodeNeural : Node3D
         _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
         _wasWaveActive = false;
 
+        // Kill in-flight neurotransmitters — their StartTime is in the old
+        // timeline, would fly through the new position's geometry.
+        for (int i = 0; i < NeuroInstanceCount; i++)
+        {
+            _neuroParticles[i].IsActive = false;
+            _neuroMultiMesh.SetInstanceTransform(i,
+                new Transform3D(
+                    Basis.Identity.Scaled(new Vector3(TinyScale, TinyScale, TinyScale)),
+                    Vector3.Zero));
+        }
+        _neuroWriteIndex = 0;
+
         GD.Print($"[Neural] Timeline reset at clock={nowClock:F2} (seek or track change)");
+    }
+
+    private void SetupNeurotransmitters()
+    {
+        var mesh = new SphereMesh
+        {
+            Radius = NeuroMeshRadius,
+            Height = NeuroMeshRadius * 2f,
+            RadialSegments = 6,
+            Rings = 4,
+        };
+
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(1.0f, 0.92f, 0.55f, 1.0f),
+            EmissionEnabled = true,
+            Emission = new Color(1.0f, 0.85f, 0.4f),
+            EmissionEnergyMultiplier = 2.5f,
+        };
+
+        _neuroMultiMesh = new MultiMesh
+        {
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+            UseColors = false,
+            Mesh = mesh,
+            InstanceCount = NeuroInstanceCount,
+        };
+        _neuroParticles = new NeuroParticle[NeuroInstanceCount];
+
+        // Initialize all instance transforms to a tiny scale, otherwise
+        // MultiMesh renders all instances at the origin before the first
+        // UpdateNeurotransmitters pass.
+        var hidden = new Transform3D(
+            Basis.Identity.Scaled(new Vector3(TinyScale, TinyScale, TinyScale)),
+            Vector3.Zero);
+        for (int i = 0; i < NeuroInstanceCount; i++)
+            _neuroMultiMesh.SetInstanceTransform(i, hidden);
+
+        _neuroMultiMesh.CustomAabb = new Aabb(new Vector3(-4, -4, -4), new Vector3(8, 8, 8));
+
+        _sceneRoot.AddChild(new MultiMeshInstance3D
+        {
+            Multimesh = _neuroMultiMesh,
+            MaterialOverride = material,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
+        });
+    }
+
+    private void SetupAmbientParticles()
+    {
+        var quad = new QuadMesh { Size = new Vector2(0.04f, 0.04f) };
+
+        var mat = new StandardMaterial3D
+        {
+            BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(0.95f, 0.70f, 0.40f, 0.55f),
+            VertexColorUseAsAlbedo = true,
+        };
+
+        var gradient = new Gradient();
+        gradient.SetColor(0, new Color(1.0f, 1.0f, 0.85f, 0.9f));
+        gradient.SetColor(1, new Color(0.85f, 0.55f, 0.30f, 0.0f));
+        var colorRamp = new GradientTexture1D { Gradient = gradient };
+
+        var pm = new ParticleProcessMaterial
+        {
+            EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
+            EmissionSphereRadius = 2.5f,
+            Gravity = Vector3.Zero,
+            Direction = Vector3.Up,
+            Spread = 180f,
+            InitialVelocityMin = 0.03f,
+            InitialVelocityMax = 0.10f,
+            ScaleMin = 0.5f,
+            ScaleMax = 1.5f,
+            ColorRamp = colorRamp,
+            OrbitVelocityMin = 0.05f,
+            OrbitVelocityMax = 0.20f,
+        };
+
+        _ambientParticles = new GpuParticles3D
+        {
+            Amount = 300,
+            Lifetime = 4.0,
+            Emitting = true,
+            AmountRatio = 0.3f,
+            DrawPass1 = quad,
+            ProcessMaterial = pm,
+            MaterialOverride = mat,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            VisibilityAabb = new Aabb(new Vector3(-4, -4, -4), new Vector3(8, 8, 8)),
+        };
+        _sceneRoot.AddChild(_ambientParticles);
+    }
+
+    private void SpawnNeurotransmitter(int fromIdx, int toIdx, double startTime)
+    {
+        // A particle that would have already arrived is dropped — cheaper
+        // than spawning and immediately killing it next frame.
+        double now = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        if (now - startTime >= NeuroDuration) return;
+
+        int slot = _neuroWriteIndex % NeuroInstanceCount;
+        _neuroWriteIndex++;
+
+        _neuroParticles[slot] = new NeuroParticle
+        {
+            FromPos = _nodeBasePos[fromIdx],
+            ToPos = _nodeBasePos[toIdx],
+            StartTime = startTime,
+            IsActive = true,
+        };
+    }
+
+    private void UpdateNeurotransmitters(double nowClock)
+    {
+        for (int i = 0; i < NeuroInstanceCount; i++)
+        {
+            if (!_neuroParticles[i].IsActive) continue;
+
+            float t = (float)((nowClock - _neuroParticles[i].StartTime) / NeuroDuration);
+            if (t < 0f || t > 1f)
+            {
+                _neuroParticles[i].IsActive = false;
+                _neuroMultiMesh.SetInstanceTransform(i,
+                    new Transform3D(
+                        Basis.Identity.Scaled(new Vector3(TinyScale, TinyScale, TinyScale)),
+                        Vector3.Zero));
+                continue;
+            }
+
+            // Straight-line lerp. A curved path (quadratic bezier with a
+            // small perpendicular control point) would read slightly more
+            // organic; straight is fine for the first pass and cheaper.
+            var pos = _neuroParticles[i].FromPos.Lerp(_neuroParticles[i].ToPos, t);
+
+            // Scale profile: sin(pi*t) — 0 at start/end, 1 at midpoint.
+            // "Fades in, fades out" without shader involvement.
+            float scale = Mathf.Sin(t * Mathf.Pi);
+            var basis = Basis.Identity.Scaled(new Vector3(scale, scale, scale));
+            _neuroMultiMesh.SetInstanceTransform(i, new Transform3D(basis, pos));
+        }
     }
 
     public override void _ExitTree() => _ipc.Dispose();
