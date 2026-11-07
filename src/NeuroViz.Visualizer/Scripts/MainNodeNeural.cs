@@ -15,6 +15,37 @@ public partial class MainNodeNeural : Node3D
     private MultiMesh _nodeMultimesh = null!;
     private Label _fpsLabel = null!;
 
+    // N.3: activation state and hop-cascade queue.
+    private float[] _activation = null!;
+    private List<int>[] _adjacency = null!;
+    private List<int>[] _lowNodesByHemi = null!;
+    private readonly PriorityQueue<(int idx, float intensity), double> _pending = new();
+    private readonly Random _pulseRng = new(7);
+    private double _lastSeedTime = double.NegativeInfinity;
+    private double _lastPulseSetAt = double.NegativeInfinity;
+    private ParamValueRef _panState = new();
+    private double _lastClock;
+
+    /// <summary>
+    /// Minimal ParamValue wrapper — same idea as spike's MainNode3D. Kept
+    /// here as a nested class so the neural scene has zero coupling to
+    /// NeuroViz.Core.Ipc except for the payload types.
+    /// </summary>
+    private sealed class ParamValueRef
+    {
+        public NeuroViz.Core.Ipc.ParamValue? Value { get; init; }
+
+        public float EvaluateAt(double nowSeconds)
+        {
+            if (Value is null) return 0f;
+            if (Value.DecayMs <= 0) return Value.Value;
+            var age = nowSeconds - Value.SetAtSeconds;
+            if (age < 0) return 0f;
+            var k = (float)System.Math.Exp(-age / (Value.DecayMs / 1000.0));
+            return Value.Value * k;
+        }
+    }
+
     public override void _Ready()
     {
         _topology = NeuralTopology.Generate(
@@ -31,6 +62,8 @@ public partial class MainNodeNeural : Node3D
         BuildNodeMesh();
         BuildIntraEdgeMesh();
         BuildCCEdgeMesh();
+        BuildAdjacency();
+        _activation = new float[_topology.Nodes.Count];
 
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
@@ -258,11 +291,137 @@ public partial class MainNodeNeural : Node3D
     public override void _Process(double delta)
     {
         _ipc.DrainMainThreadActions();
+
+        if (!_ipc.IsConnected)
+        {
+            _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
+            return;
+        }
+
+        var frame = _ipc.GetLatestFrame();
+        if (frame != null)
+        {
+            _lastClock = frame.AudioClockSeconds;
+
+            // Pulse: rising edge detected by SetAtSeconds changing. This
+            // is more robust than value-crossing thresholds (fast drum hits
+            // with 150 ms decay never drop below 0.5 between beats).
+            if (frame.Params.TryGetValue("pulse", out var p))
+            {
+                if (p.SetAtSeconds > _lastPulseSetAt + 0.001)
+                {
+                    _lastPulseSetAt = p.SetAtSeconds;
+                    TrySeedPulse(p.SetAtSeconds);
+                }
+            }
+
+            if (frame.Params.TryGetValue("pan_x", out var px))
+                _panState = new ParamValueRef { Value = px };
+        }
+
+        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+
+        // Decay first, then process pending — otherwise a hop that just
+        // arrived would decay in the same frame it was applied.
+        float decay = Mathf.Exp(-(float)delta / 0.4f);
+        for (int i = 0; i < _activation.Length; i++)
+            _activation[i] *= decay;
+
+        while (_pending.TryPeek(out _, out var at) && at <= nowClock)
+        {
+            var (idx, intensity) = _pending.Dequeue();
+            _activation[idx] = Mathf.Min(1.5f, _activation[idx] + intensity);
+
+            // Cascade continues while intensity * 0.6 > 0.05 → ~5 hops max
+            // (1.0 → 0.6 → 0.36 → 0.216 → 0.13 → 0.078, then cut at 0.05).
+            // At 120 ms/hop that is ~600 ms of visible wave from a seed.
+            if (intensity * 0.6f > 0.05f)
+            {
+                foreach (var nbr in _adjacency[idx])
+                    _pending.Enqueue((nbr, intensity * 0.6f), at + 0.12);
+            }
+        }
+
+        UpdateNodeColors();
+
+        int activeCount = 0;
+        for (int i = 0; i < _activation.Length; i++)
+            if (_activation[i] > 0.05f) activeCount++;
+
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"Nodes: {_topology.Nodes.Count} | " +
             $"Edges: {_topology.Edges.Count} | " +
-            $"CC: {_topology.Edges.Count(e => e.IsCrossCallosum)}";
+            $"Pending: {_pending.Count} | Active: {activeCount}";
+    }
+
+    private void BuildAdjacency()
+    {
+        int n = _topology.Nodes.Count;
+        _adjacency = new List<int>[n];
+        _lowNodesByHemi = new List<int>[] { new(), new() };
+        for (int i = 0; i < n; i++) _adjacency[i] = new();
+
+        // Only intra edges participate in the hop cascade. CC edges are
+        // reserved for stream_boundary reconfiguration (N.7); using them here
+        // would merge the two hemispheres' cascades into one — breaks the
+        // pan_x → "which hemisphere lights up" mapping.
+        foreach (var edge in _topology.Edges)
+        {
+            if (edge.IsCrossCallosum) continue;
+            _adjacency[edge.A].Add(edge.B);
+            _adjacency[edge.B].Add(edge.A);
+        }
+
+        for (int i = 0; i < n; i++)
+        {
+            var node = _topology.Nodes[i];
+            if (node.Layer == 0) _lowNodesByHemi[node.Hemisphere].Add(i);
+        }
+
+        GD.Print($"[Neural] Adjacency: {_adjacency.Sum(a => a.Count) / 2} intra edges, " +
+                 $"{_lowNodesByHemi[0].Count}+{_lowNodesByHemi[1].Count} low seeds per hemi");
+    }
+
+    /// <summary>
+    /// Seeds 1–3 nodes in the Low layer, hemisphere chosen by pan_x:
+    /// -1 → always left, +1 → always right, 0 → 50/50.
+    /// Cooldown 50 ms prevents drum-n-bass from stacking cascades into mush.
+    /// </summary>
+    private void TrySeedPulse(double eventTime)
+    {
+        if (eventTime - _lastSeedTime < 0.05) return;
+        _lastSeedTime = eventTime;
+
+        float panX = _panState.EvaluateAt(eventTime);
+        float leftProb = (1f - panX) * 0.5f;
+        int seedCount = _pulseRng.Next(1, 4);   // 1..3
+
+        for (int s = 0; s < seedCount; s++)
+        {
+            int hemi = _pulseRng.NextDouble() < leftProb ? 0 : 1;
+            var candidates = _lowNodesByHemi[hemi];
+            if (candidates.Count == 0) continue;
+
+            int idx = candidates[_pulseRng.Next(candidates.Count)];
+            _pending.Enqueue((idx, 1.0f), eventTime);
+        }
+    }
+
+    private void UpdateNodeColors()
+    {
+        // 1600 SetInstanceColor per frame. Each call is a small memcpy into
+        // the multimesh buffer; the whole loop is ~microseconds on the CPU
+        // and one GPU buffer upload. If FPS ever drops here, the fix is
+        // "skip nodes whose activation hasn't changed" — trivial follow-up,
+        // not needed at current node counts.
+        for (int i = 0; i < _topology.Nodes.Count; i++)
+        {
+            var baseColor = NodeBaseColor(_topology.Nodes[i].Layer);
+            float act = Mathf.Clamp(_activation[i], 0f, 1f);
+            var color = baseColor.Lerp(Colors.White, act);
+            _nodeMultimesh.SetInstanceColor(i, color);
+        }
     }
 
     public override void _ExitTree() => _ipc.Dispose();
