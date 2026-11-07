@@ -129,16 +129,21 @@ LowL MidL HighL│HighR MidR LowR
 
 **Фон:** (0.02, 0.02, 0.05) тёмно-синий. **Ambient:** (0.10, 0.07, 0.05) тёплый тусклый.
 
-**Открытый вопрос для N.4:** базовая палитра теперь тёплая, поэтому
-«cold → warm» контраст из исходного плана теряется. Варианты
-активации:
-- (a) white hot — узел вспыхивает до белого на пике, база остаётся
-  бежевой;
-- (b) red → yellow — активированный узел идёт в красный (совпадает
-  с синапсами), затем в жёлтый на пике;
-- (c) glow only — активация = emissive, не hue.
+**Активация (N.4, решено):** base → red (0.3) → orange (0.7) → yellow (1.0),
+плюс emissive: `glow = act²`, `EMISSION = albedo * (0.15 + glow*2.0)`.
+Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
 
-Решение примем в N.4, посмотрев на базовую сцену в движении.
+**Отклонения от исходного плана §4:**
+- `band_energy.low/mid/high` → **emissive boost**, не scale.
+  Scale делал бы «растущие узлы» (выглядит как баг); emissive
+  даёт «сеть освещается» — тот же UX, чище.
+- `harmonicity` → **brightness modulation** рёбер, не vertex jitter.
+  Jitter требует per-frame vertex rebuild (дорого) или shader с
+  UV-offsets (сложно). Brightness даёт 80% эффекта за 5% кода.
+  Настоящий jitter — open follow-up (N.4-fix или Phase 3).
+- `speech_music_ratio` — отложено в N.6 (вместе с vad_state и CC).
+
+**VAD / speech** — N.6.
 
 ### Interaction table (ядро «системы»)
 

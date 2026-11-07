@@ -16,6 +16,21 @@ public partial class MainNodeNeural : Node3D
     private Node3D _sceneRoot = null!;
     private Label _fpsLabel = null!;
 
+    // N.4: continuous inputs (raw + smoothed) and event states.
+    private float _contLow, _smoothLow;
+    private float _contMid, _smoothMid;
+    private float _contHigh, _smoothHigh;
+    private float _contFlux, _smoothFlux;
+    private float _contHarmonicity, _smoothHarmonicity;
+    private ParamValueRef _shiverState = new();
+    private ParamValueRef _cortexFlashState = new();
+    private ParamValueRef _pitchState = new();
+    private ParamValueRef _releaseState = new();
+    private ShaderMaterial _nodeMaterial = null!;
+    private ShaderMaterial _edgeMaterial = null!;
+    private double _lastFluxFlashTime = double.NegativeInfinity;
+    private const float SceneRootBaseScale = 2.0f;
+
     // N.3: activation state and hop-cascade queue.
     private float[] _activation = null!;
     private List<int>[] _adjacency = null!;
@@ -58,6 +73,14 @@ public partial class MainNodeNeural : Node3D
         int cc = _topology.Edges.Count(e => e.IsCrossCallosum);
         GD.Print($"[Neural] Generated: {_topology.Nodes.Count} nodes, " +
                  $"{_topology.Edges.Count} edges ({cc} CC).");
+
+        var edgeShader = GD.Load<Shader>("res://neural_edge.gdshader");
+        if (edgeShader == null)
+        {
+            GD.PrintErr("[Neural] Could not load res://neural_edge.gdshader");
+            return;
+        }
+        _edgeMaterial = new ShaderMaterial { Shader = edgeShader };
 
         SetupCameraAndLight();
 
@@ -136,14 +159,13 @@ public partial class MainNodeNeural : Node3D
             Rings = 6,
         };
 
-        var mat = new StandardMaterial3D
+        var shader = GD.Load<Shader>("res://neural_node.gdshader");
+        if (shader == null)
         {
-            AlbedoColor = new Color(1, 1, 1),   // multiplied by instance color
-            VertexColorUseAsAlbedo = true,       // per-instance tint flows to ALBEDO
-            EmissionEnabled = true,
-            Emission = new Color(0.06f, 0.04f, 0.02f),   // was (0.03, 0.05, 0.10) bluish
-            Roughness = 0.55f,
-        };
+            GD.PrintErr("[Neural] Could not load res://neural_node.gdshader");
+            return;
+        }
+        _nodeMaterial = new ShaderMaterial { Shader = shader };
 
         _nodeMultimesh = new MultiMesh
         {
@@ -156,7 +178,7 @@ public partial class MainNodeNeural : Node3D
         _sceneRoot.AddChild(new MultiMeshInstance3D
         {
             Multimesh = _nodeMultimesh,
-            MaterialOverride = mat,
+            MaterialOverride = _nodeMaterial,   // ← was `mat`
             CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
         });
 
@@ -191,7 +213,7 @@ public partial class MainNodeNeural : Node3D
         _sceneRoot.AddChild(new MeshInstance3D
         {
             Mesh = MakeLineMesh(vertices, colors),
-            MaterialOverride = LineMaterial(),
+            MaterialOverride = _edgeMaterial,
         });
     }
 
@@ -228,7 +250,7 @@ public partial class MainNodeNeural : Node3D
         _sceneRoot.AddChild(new MeshInstance3D
         {
             Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray()),
-            MaterialOverride = LineMaterial(),
+            MaterialOverride = _edgeMaterial,
         });
     }
 
@@ -265,14 +287,6 @@ public partial class MainNodeNeural : Node3D
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
         return mesh;
     }
-
-    private static StandardMaterial3D LineMaterial() => new()
-    {
-        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-        VertexColorUseAsAlbedo = true,
-        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-        AlbedoColor = new Color(1, 1, 1, 1),
-    };
 
     // Warm palette (N.2-fix): nodes light-beige → dark tan from Low to
     // High; synapses muted red (intra) / brighter muted red (CC). Replaces
@@ -319,9 +333,6 @@ public partial class MainNodeNeural : Node3D
         {
             _lastClock = frame.AudioClockSeconds;
 
-            // Pulse: rising edge detected by SetAtSeconds changing. This
-            // is more robust than value-crossing thresholds (fast drum hits
-            // with 150 ms decay never drop below 0.5 between beats).
             if (frame.Params.TryGetValue("pulse", out var p))
             {
                 if (p.SetAtSeconds > _lastPulseSetAt + 0.001)
@@ -333,24 +344,62 @@ public partial class MainNodeNeural : Node3D
 
             if (frame.Params.TryGetValue("pan_x", out var px))
                 _panState = new ParamValueRef { Value = px };
+
+            // N.4 event params
+            if (frame.Params.TryGetValue("shiver", out var sv))
+                _shiverState = new ParamValueRef { Value = sv };
+            if (frame.Params.TryGetValue("cortex_flash", out var cf))
+                _cortexFlashState = new ParamValueRef { Value = cf };
+            if (frame.Params.TryGetValue("pitch_height", out var ph))
+                _pitchState = new ParamValueRef { Value = ph };
+            if (frame.Params.TryGetValue("release", out var rel))
+                _releaseState = new ParamValueRef { Value = rel };
+
+            // N.4 continuous
+            if (frame.ContinuousParams.TryGetValue("band_energy.low", out var bl)) _contLow = bl;
+            if (frame.ContinuousParams.TryGetValue("band_energy.mid", out var bm)) _contMid = bm;
+            if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh)) _contHigh = bh;
+            if (frame.ContinuousParams.TryGetValue("spectral_flux", out var fl)) _contFlux = fl;
+            if (frame.ContinuousParams.TryGetValue("harmonicity", out var hm)) _contHarmonicity = hm;
         }
 
         double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        float dt = (float)delta;
 
-        // Decay first, then process pending — otherwise a hop that just
-        // arrived would decay in the same frame it was applied.
-        float decay = Mathf.Exp(-(float)delta / 0.4f);
+        // Smoothing (band kb = 83ms, flux kf = 33ms).
+        float kb = 1f - Mathf.Exp(-12f * dt);
+        float kf = 1f - Mathf.Exp(-30f * dt);
+        _smoothLow = Mathf.Lerp(_smoothLow, _contLow, kb);
+        _smoothMid = Mathf.Lerp(_smoothMid, _contMid, kb);
+        _smoothHigh = Mathf.Lerp(_smoothHigh, _contHigh, kb);
+        _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
+        _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kb);
+
+        // Decay activation, THEN process pending (order matters — see N.3).
+        float decay = Mathf.Exp(-dt / 0.4f);
         for (int i = 0; i < _activation.Length; i++)
             _activation[i] *= decay;
+
+        // Spectral flux → discrete random flashes (small, contained bursts).
+        // Cooldown 150 ms: max ~7 flashes/s. Intensity 0.25 → ~3 hops,
+        // dies out quickly, reads as "ambient neural noise" on top of the
+        // main cascade.
+        if (_smoothFlux > 0.15f && nowClock - _lastFluxFlashTime > 0.15)
+        {
+            _lastFluxFlashTime = nowClock;
+            int flashCount = 1 + (int)(_smoothFlux * 3);   // 1..4
+            for (int k = 0; k < flashCount; k++)
+            {
+                int idx = _pulseRng.Next(_topology.Nodes.Count);
+                _pending.Enqueue((idx, 0.25f), nowClock);
+            }
+        }
 
         while (_pending.TryPeek(out _, out var at) && at <= nowClock)
         {
             var (idx, intensity) = _pending.Dequeue();
             _activation[idx] = Mathf.Min(1.5f, _activation[idx] + intensity);
 
-            // Cascade continues while intensity * 0.6 > 0.05 → ~5 hops max
-            // (1.0 → 0.6 → 0.36 → 0.216 → 0.13 → 0.078, then cut at 0.05).
-            // At 120 ms/hop that is ~600 ms of visible wave from a seed.
             if (intensity * 0.6f > 0.05f)
             {
                 foreach (var nbr in _adjacency[idx])
@@ -358,7 +407,28 @@ public partial class MainNodeNeural : Node3D
             }
         }
 
-        UpdateNodeColors();
+        // Event states.
+        float shiver = _shiverState.EvaluateAt(nowClock);
+        float flash = _cortexFlashState.EvaluateAt(nowClock);
+        float pitch = _pitchState.EvaluateAt(nowClock);
+        float release = _releaseState.EvaluateAt(nowClock);
+
+        // Global brightness: shiver (novelty, 1s decay) + cortex_flash (400ms).
+        float globalBrightness = 1.0f + shiver * 0.8f + flash * 1.5f;
+        _nodeMaterial.SetShaderParameter("global_brightness", globalBrightness);
+
+        // Edge coherence from harmonicity: 0.4 (noise) .. 1.0 (pure tone).
+        float coherence = 0.4f + _smoothHarmonicity * 0.6f;
+        _edgeMaterial.SetShaderParameter("coherence", coherence);
+
+        // Release → global compression 10%, centroid preserved at world X=0.97.
+        // Recompute position each frame because scale changes; hardcoding
+        // posX = 0.97 - scale works because local centroid is at X=1.0.
+        float scale = SceneRootBaseScale * (1f - release * 0.1f);
+        _sceneRoot.Scale = new Vector3(scale, scale, scale);
+        _sceneRoot.Position = new Vector3(0.97f - scale, 0, 0);
+
+        UpdateNodeColors(pitch);
 
         int activeCount = 0;
         for (int i = 0; i < _activation.Length; i++)
@@ -366,9 +436,11 @@ public partial class MainNodeNeural : Node3D
 
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
-            $"Nodes: {_topology.Nodes.Count} | " +
-            $"Edges: {_topology.Edges.Count} | " +
-            $"Pending: {_pending.Count} | Active: {activeCount}";
+            $"Pending: {_pending.Count} | Active: {activeCount}\n" +
+            $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
+            $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2}\n" +
+            $"shiver: {shiver:F2} | flash: {flash:F2} | pitch: {pitch:F2} | rel: {release:F2} | " +
+            $"bright: {globalBrightness:F2}";
     }
 
     private void BuildAdjacency()
@@ -424,20 +496,57 @@ public partial class MainNodeNeural : Node3D
         }
     }
 
-    private void UpdateNodeColors()
+    private void UpdateNodeColors(float pitch)
     {
-        // 1600 SetInstanceColor per frame. Each call is a small memcpy into
-        // the multimesh buffer; the whole loop is ~microseconds on the CPU
-        // and one GPU buffer upload. If FPS ever drops here, the fix is
-        // "skip nodes whose activation hasn't changed" — trivial follow-up,
-        // not needed at current node counts.
+        // Subtle violet shift at high pitch — the base beige palette stays
+        // recognisable, but high-register notes cool toward lavender.
+        var pitchTint = new Color(0.65f, 0.45f, 0.85f);
+        float pitchBlend = pitch * 0.35f;
+
         for (int i = 0; i < _topology.Nodes.Count; i++)
         {
-            var baseColor = NodeBaseColor(_topology.Nodes[i].Layer);
-            float act = Mathf.Clamp(_activation[i], 0f, 1f);
-            var color = baseColor.Lerp(Colors.White, act);
-            _nodeMultimesh.SetInstanceColor(i, color);
+            var node = _topology.Nodes[i];
+            var baseCol = NodeBaseColor(node.Layer).Lerp(pitchTint, pitchBlend);
+
+            // Continuous layer contribution: band_energy of this node's
+            // layer adds a *baseline* activation. Matches spike's "sphere
+            // breathes with bass" but as glow, not scale (scale felt like
+            // growing nodes = buggy; glow reads as "network lights up").
+            float layerEnergy = node.Layer switch
+            {
+                0 => _smoothLow,
+                1 => _smoothMid,
+                _ => _smoothHigh,
+            };
+            float continuousContrib = layerEnergy * 0.4f;
+
+            // Max, not sum — cascade and continuous don't double up.
+            float effAct = Mathf.Clamp(Mathf.Max(_activation[i], continuousContrib), 0f, 1f);
+
+            var finalColor = ActivationColor(baseCol, effAct);
+
+            // Encode activation in alpha (1 - act) so the shader can decode
+            // it. RGB carries the already-blended albedo, so albedo + act
+            // are both derived from one SetInstanceColor call.
+            _nodeMultimesh.SetInstanceColor(i,
+                new Color(finalColor.R, finalColor.G, finalColor.B, 1f - effAct));
         }
+    }
+
+    /// <summary>
+    /// Activation palette (N.4 user decision): base → red (0.3) →
+    /// orange (0.7) → yellow (1.0). The three breakpoints give the wave
+    /// a "heat" feeling — cool base, hot peaks, warm transition.
+    /// </summary>
+    private static Color ActivationColor(Color baseCol, float act)
+    {
+        if (act < 0.3f)
+            return baseCol.Lerp(new Color(0.90f, 0.15f, 0.15f), act / 0.3f);
+        if (act < 0.7f)
+            return new Color(0.90f, 0.15f, 0.15f)
+                .Lerp(new Color(1.00f, 0.55f, 0.10f), (act - 0.3f) / 0.4f);
+        return new Color(1.00f, 0.55f, 0.10f)
+            .Lerp(new Color(1.00f, 0.95f, 0.25f), (act - 0.7f) / 0.3f);
     }
 
     public override void _ExitTree() => _ipc.Dispose();
