@@ -725,7 +725,12 @@ public partial class MainNodeNeural : Node3D
             nonuniformity = 0f;
 
         bool scaleChanged = Mathf.Abs(baseScale - _lastAppliedScale) > 1e-4f;
-        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged;
+        // N.7-fix: restructure moves node positions every frame. Without
+        // this term, UpdateNodeTransforms would skip the 1600 writes on
+        // frames that have no wave and no speech-scale change — the nodes
+        // would not visibly move during the restructure transition.
+        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged
+                         || _restructureActive;
 
         if (needsRewrite)
         {
@@ -1014,8 +1019,6 @@ public partial class MainNodeNeural : Node3D
 
     private Vector3 ComputeRestructureTarget(NeuralNode node, Random rng)
     {
-        // Q1: stay within the node's layer X-range. Layers partition
-        // X by hemisphere; mirrored for hemisphere 1.
         bool left = node.Hemisphere == 0;
         float xMin, xMax;
         switch (node.Layer)
@@ -1024,34 +1027,69 @@ public partial class MainNodeNeural : Node3D
             case 1: xMin = 0.56f; xMax = 0.80f; break;
             default: xMin = 0.80f; xMax = 0.96f; break;
         }
-        if (!left)
-        {
-            (xMin, xMax) = (2f - xMax, 2f - xMin);
-        }
+        if (!left) (xMin, xMax) = (2f - xMax, 2f - xMin);
 
-        // Q3: up to 50% of layer X-extent, same magnitude in YZ.
         float xRange = xMax - xMin;
-        var jitter = new Vector3(
-            (float)(rng.NextDouble() * 2 - 1) * xRange * 0.5f,
-            (float)(rng.NextDouble() * 2 - 1) * 0.25f,
-            (float)(rng.NextDouble() * 2 - 1) * 0.25f);
+        var current = node.Position;
 
-        var target = node.Position + jitter;
-        target.X = Mathf.Clamp(target.X, Mathf.Min(xMin, xMax), Mathf.Max(xMin, xMax));
+        // Free random delta.
+        float dx = (float)(rng.NextDouble() * 2 - 1) * xRange * 0.5f;
+        float dy = (float)(rng.NextDouble() * 2 - 1) * 0.25f;
+        float dz = (float)(rng.NextDouble() * 2 - 1) * 0.25f;
 
-        // Clamp YZ inside the ellipsoid cross-section at this X.
+        // ── X: reflect off layer-slab boundaries (was Clamp) ────────────
+        float targetX = current.X + dx;
+        if (targetX < xMin) targetX = 2f * xMin - targetX;
+        if (targetX > xMax) targetX = 2f * xMax - targetX;
+        targetX = Mathf.Clamp(targetX, xMin, xMax);   // single reflection is
+                                                      // exact given |dx| ≤ xRange/2
+                                                      // and current ∈ [xMin, xMax]
+
+        // ── YZ: reflect off circle ──────────────────────────────────────
+        // Circle at plane X = targetX, centre (cx, 0). Radius from the
+        // triangle the user described: r = sqrt(R² − d²), R = 0.5 (YZ
+        // semi-axis), d = |targetX − cx| (perpendicular from hemisphere
+        // centre). +15 % buffer prevents clustering at the boundary itself.
         float cx = left ? 0.53f : 1.47f;
-        float a = 0.43f, b = 0.5f, c = 0.5f;
-        float dx = (target.X - cx) / a;
-        float r2 = 1f - dx * dx;
-        if (r2 > 0f)
+        const float R = 0.5f;
+        float d = Mathf.Abs(targetX - cx);
+        float rInner = Mathf.Sqrt(Mathf.Max(0f, R * R - d * d));
+        float rCircle = rInner * 1.15f;
+
+        if (rCircle < 0.01f)
+            return new Vector3(targetX, current.Y, current.Z);   // no room
+
+        var posYZ = new Vector2(current.Y, current.Z);
+        var deltaYZ = new Vector2(dy, dz);
+        var rawTargetYZ = posYZ + deltaYZ;
+
+        if (rawTargetYZ.Length() <= rCircle)
+            return new Vector3(targetX, rawTargetYZ.X, rawTargetYZ.Y);
+
+        // Crossing: P + t·Δ hits the circle. Solve |P + t·Δ|² = r².
+        float a = deltaYZ.LengthSquared();
+        float b = 2f * posYZ.Dot(deltaYZ);
+        float c = posYZ.LengthSquared() - rCircle * rCircle;
+        float disc = b * b - 4f * a * c;
+
+        if (disc < 0f || a < 1e-8f)
         {
-            float rf = Mathf.Sqrt(r2);
-            target.Y = Mathf.Clamp(target.Y, -b * rf, b * rf);
-            target.Z = Mathf.Clamp(target.Z, -c * rf, c * rf);
+            // Degenerate (shouldn't happen if start inside + target outside).
+            var fallback = rawTargetYZ.Length() > 1e-6f
+                ? rawTargetYZ.Normalized() * rCircle
+                : new Vector2(current.Y, current.Z);
+            return new Vector3(targetX, fallback.X, fallback.Y);
         }
 
-        return target;
+        float t = (-b + Mathf.Sqrt(disc)) / (2f * a);
+        t = Mathf.Clamp(t, 0f, 1f);
+        var cross = posYZ + deltaYZ * t;
+        var n = cross.Length() > 1e-6f ? cross.Normalized() : Vector2.Right;
+        var outward = rawTargetYZ - cross;
+        var reflected = outward - 2f * outward.Dot(n) * n;
+        var finalYZ = cross + reflected;
+
+        return new Vector3(targetX, finalYZ.X, finalYZ.Y);
     }
 
     private void TickRestructure(double nowClock)
@@ -1068,6 +1106,12 @@ public partial class MainNodeNeural : Node3D
             _topology.Nodes[i].Position =
                 _restructureStartPositions[i].Lerp(kvp.Value, eased);
             _nodeBasePos[i] = _topology.Nodes[i].Position;
+            // Phase is derived from position (HashPhase). During restructure
+            // the position changes each frame, so the cached phase would go
+            // stale and edges would compute a different phase at the same
+            // endpoint. Recompute per moved node per frame — 480 Sin calls
+            // is nothing.
+            _nodePhase[i] = HashPhase(_topology.Nodes[i].Position);
         }
 
         for (int i = 0; i < _topology.Nodes.Count; i++)
