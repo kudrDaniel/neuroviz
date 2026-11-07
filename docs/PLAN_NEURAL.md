@@ -1,9 +1,48 @@
 # Neural-визуализатор — план
 
-**Статус:** в работе.
-**Ветка:** `feature/neural-visualizer` (от `main` после коммита
-`docs: mark Phase 2 achieved`).
+**Статус: achieved.** Все подэтапы N.1–N.10 закрыты. Все Q1–Q5 и
+N-Q1..N-Q5 решены или отложены в Phase 2.5. Neural-сцена доступна через
+Settings → Visualizer scene; функционально завершена.
+
+**Ветка:** `feature/neural-visualizer` (влита в main).
 **Образец:** `PLAN_PHASE_2.md`.
+**Коммитов:** ~20 (N.1–N.10 + fixes).
+
+---
+
+## 0. Итоговая карта
+
+| Подэтап | Статус | Комментарий |
+|---|---|---|
+| N.1 Топология | ✅ | Два геоида, зеркальные слои, K-nearest + cross-layer guarantee |
+| N.2 Рендер | ✅ | `MultiMeshInstance3D` (узлы) + `ArrayMesh` (intra + CC) |
+| N.2-fix | ✅ | Ширина 2×1, тёплая база, красные синапсы |
+| N.2-fix2 | ✅ | Масштаб 2× без отдаления камеры |
+| N.3 Каскад | ✅ | Hop-cascade, 120 ms/hop, seed по `pan_x` |
+| N.4 Палитра + continuous | ✅ | Red→orange→yellow, emissive, per-layer baseline |
+| N.4-fix | ✅ | Release wave от центра |
+| N.4-fix2 | ✅ | Reset при seek |
+| N.4-fix3/4/5 | ✅ | CC wave, NaN guards, wavefront от topology |
+| N.5 Частицы | ✅ | Neurotransmitters + ambient |
+| N.5-fix | ✅ | Ambient по центру, фиолетовые частицы |
+| N.6 CC bundles + vad/speech | ✅ | Per-layer bundle energy, hemisphere bias, speech-scale |
+| N.7 Restructure | ✅ | Эволюционная перестройка на `stream_boundary` |
+| N.7-fix | ✅ | Отражение от границ слоя, no clustering |
+| N.7-fix2 | ✅ | Cap intra edges (FPS stabilization) |
+| N.7-fix3 | ✅ | Snapshot replay (B1) |
+| N.7-fix4 | ✅ | Reset restructure cooldown on seek |
+| N.7-fix5 | ✅ | `StreamBoundaryDetector.OnSeek` = full reset |
+| N.7-fix6 | ✅ | Remove obsolete test, log Snaps count |
+| N.7-fix7 | ✅ | Replay stored targets (decouple from drift) |
+| N.8 Idle camera | ✅ | Orbit + novelty zoom-out |
+| N.9 Settings UI | ✅ | Scene selector + neural fields |
+| N.9-fix | ✅ | `VisualConfigReceived` wired to neural |
+| N.9-fix2 | ✅ | Skip redundant reload, heartbeat IPC |
+| N.9-fix3 | ✅ | Preview capture ported to neural |
+| N.10-fix | ✅ | Visual clock for wave (no stutter) |
+| N.10-fix2 | ✅ | Wave distance sync nodes/edges |
+| N.10-fix3 | ✅ | Bloom (glow) enabled |
+| N.10 Docs | ✅ | Эта финализация |
 
 ---
 
@@ -467,3 +506,89 @@ snapshot'а ≤ позиции. `_initialSnapshot` — состояние до �
 - Динамическая топология на каждом кадре (только на stream_boundary).
 - Multi-track, export, motif, cross-platform, node-graph.
 - Ручное редактирование топологии (только генератор).
+
+---
+
+## 11. Возможные follow-ups
+
+Не в текущей версии. Каждый — отдельная итерация, если появится боль
+или желание углубить.
+
+### Volumetric fog (`forward_plus`)
+
+**Что даёт.** Настоящий 3D-туман, в котором эмиссивные узлы и
+CC-магистрали светятся в объёме. Создаёт god-rays, объёмную глубину,
+«сеть висит в светящейся среде». Мощный визуальный апгрейд для
+neural-сцены.
+
+**Что нужно.** Переключение `project.godot` с `gl_compatibility` на
+`forward_plus` (Vulkan/D3D12). Настройки `Environment`:
+`volumetric_fog_enabled`, `volumetric_fog_density`,
+`volumetric_fog_emission`, `volumetric_fog_albedo`,
+`volumetric_fog_length`. Плюс `volumetric_fog_gi_inject` если
+хочется GI от тумана.
+
+**Риски.**
+- Производительность: forward_plus тяжелее, особенно на мобильных GPU
+  и интегрированной графике. На GTX 1060-классе — должно летать, но
+  проверить.
+- Preview: `GetImage()` через `FramePostDraw` работает на forward_plus
+  (мы это чинили специально), значит preview не сломается.
+- Spike-сцена: тоже переедет на forward_plus (общий `project.godot`),
+  вероятно без проблем, но стоит проверить FPS.
+
+**Оценка.** ~2–4 часа (три строки в `project.godot` + настройки fog +
+тюнинг визуала).
+
+**Почему отложено.** Glow/bloom уже даёт 80% «ощущения излучения» за
+5 минут работы (N.10-fix3). Volumetric fog — «вишенка на торте», но
+не блокирует базовую концепцию neural-сцены.
+
+### Кривые рёбра (вместо `PRIMITIVE_LINES`)
+
+**Что даёт.** Intra-edges (сейчас прямые линии) становятся
+bezier-кривыми, визуально «дендриты». Особенно красиво на длинных
+рёбрах через CC-пространство.
+
+**Что нужно.** Заменить `MakeLineMesh` в `BuildIntraEdgeMesh` на
+multi-segment ArrayMesh (как CC уже делает). Segments per edge — 3–4.
+
+**Риски.** CPU: rebuild mesh per-frame во время restructure растёт
+×3–4 (сейчас 3200 edges × 2 vertex = 6400, станет 3200 × 4 segment × 2
+vertex = 25600). На GTX 1060 — незаметно, но замерзание FPS возможно
+на слабых GPU.
+
+**Оценка.** ~1 день (bezier math + rebuild logic).
+
+### KI-4 (timestamp drift после seek-back)
+
+**Что даёт.** Устраняет дрейф timestamps у novelty/pulse событий после
+seek-back + play. Общий KI (не только neural) — Debug-таблица перестаёт
+показывать дубликаты `stream_boundary`, cascade seeds дрейфуют
+идентично оригиналу.
+
+**Что нужно.** Offline-анализ при Load Project (Phase 2.5, KI-3).
+При Load — прогнать весь трек за один проход, кэшировать Events с
+точными timestamp'ами. Replay использует кэш.
+
+**Оценка.** ~1 неделя (offline pipeline).
+
+**Почему отложено.** Реальный workflow — линейное прослушивание без
+перемотки. KI-4 — edge case сравнения состояний. Neural restructure
+уже покрыт (N.7-fix7 replay stored targets), cascade seeds — minor.
+Offline pipeline — большая работа, не блокирует использование.
+
+### B2 (persistence снапшотов в `.nvproj`)
+
+**Что даёт.** Snapshot'ы перестройки переживают сессию. Load Project
+восстанавливает точное состояние сети на любой позиции трека без
+предварительного проигрывания.
+
+**Что нужно.** Schema bump `EventTimeline.SchemaVersion` v3 → v4,
+сериализуемый `RestructureSnapshot` в MessagePack, миграция.
+
+**Оценка.** ~1 день.
+
+**Почему отложено.** B1 (in-memory) покрывает 90% сценариев. B2 нужен
+только для «закрыл App, через неделю открыл» + seek между boundary
+без предварительного проигрывания. Редкий кейс.
