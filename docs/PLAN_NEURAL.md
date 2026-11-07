@@ -106,19 +106,22 @@ LowL MidL HighL│HighR MidR LowR
 
 ### Частицы (N.5)
 
-**Neurotransmitters** — `MultiMeshInstance3D` со 200 instance'ами
-маленьких icosphere (radius 0.015, в SceneRoot scale 0.03 effective).
-Триггер: при dequeue каскада (каждый «hop») спавнится 1 частица на
-случайном ребре активированного узла. Летит по прямой за 0.12 s
-(синхронно с hop-задержкой pending'а). Scale profile `sin(πt)` —
-fade in/out без шейдера. Тени включены (маленькие, но заметны на
-освещённой стороне). Пул ring-buffer 200, DropOldest при переполнении.
+**Ambient** — прямой ребёнок `MainNodeNeural` (НЕ SceneRoot), world
+position `(1.0, 0, 0)` — центр структуры. Emission radius 3.0 world.
+В SceneRoot halo смещался бы влево на 2 единицы (SceneRoot position
+X=-1.03), поэтому ambient отделён от масштабируемой ветки.
 
-**Ambient** — `GpuParticles3D`, halo вокруг структуры. 300 частиц,
-lifetime 4 s, emission sphere radius 2.5 (охватывает структуру
-3.6 × 2 × 2). Density = `clamp(0.1 + mid * 0.9, 0.05, 1.0)` от
-`band_energy.mid` — та же кривая что в spike 2.4c. Цвет тёплый
-жёлтый (0.95, 0.70, 0.40), fade в gradient. Тени отключены.
+**Neurotransmitters** — `MultiMesh.CustomAabb` **обязателен**.
+`MultiMeshInstance3D` не имеет `VisibilityAabb` (это свойство
+`GpuParticles3D`). Без custom AABB Godot cull'ит весь MultiMesh:
+все instance'ы стартуют в (0,0,0) local с крошечным scale, авто-AABB
+вырожденный, и при первом рендере cull-решение уже принято —
+частицы летают «вне видимости». CustomAabb покрывает области
+local X [-0.5, 2.5], YZ [-1, 1].
+
+Цвет — фиолетовый (0.75, 0.35, 1.0), комплементарен беж-тан базе.
+Спавнится 2 частицы на hop. CastShadow = Off (200 мелких сфер на
+shadow map — расточительно, тени невидимы).
 
 **Взаимодействие с release wave:** частицы — дети SceneRoot, волна
 смещает сам SceneRoot (в N.4-fix — per-node, но позиции узлов меняются

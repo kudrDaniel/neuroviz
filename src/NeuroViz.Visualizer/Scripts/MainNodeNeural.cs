@@ -478,7 +478,11 @@ public partial class MainNodeNeural : Node3D
                 // random edge reads as "signal travels along a path" without
                 // visually fanning out. Multiple particles per hop would
                 // saturate the 200-slot pool at drum-n-bass tempo.
-                if (neighbors.Count > 0)
+                // 2 per hop — one is too sparse visually. Two, on different random
+                // edges from the same node, reads as "signal branches". Still bounded
+                // by the 200-slot pool; at drum-n-bass tempo DropOldest handles the
+                // overflow.
+                for (int k = 0; k < 2 && neighbors.Count > 0; k++)
                 {
                     int chosen = neighbors[_pulseRng.Next(neighbors.Count)];
                     SpawnNeurotransmitter(idx, chosen, at);
@@ -744,8 +748,8 @@ public partial class MainNodeNeural : Node3D
     {
         var mesh = new SphereMesh
         {
-            Radius = NeuroMeshRadius,
-            Height = NeuroMeshRadius * 2f,
+            Radius = 0.025f,             // was 0.015 — ~10 px at typical view, visible
+            Height = 0.05f,
             RadialSegments = 6,
             Rings = 4,
         };
@@ -753,10 +757,12 @@ public partial class MainNodeNeural : Node3D
         var material = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            AlbedoColor = new Color(1.0f, 0.92f, 0.55f, 1.0f),
+            // Violet pops against the beige/tan node palette — yellow
+            // blended into the base and read as "dust".
+            AlbedoColor = new Color(0.75f, 0.35f, 1.0f),
             EmissionEnabled = true,
-            Emission = new Color(1.0f, 0.85f, 0.4f),
-            EmissionEnergyMultiplier = 2.5f,
+            Emission = new Color(0.40f, 0.15f, 0.65f),
+            EmissionEnergyMultiplier = 0.6f,
         };
 
         _neuroMultiMesh = new MultiMesh
@@ -765,25 +771,33 @@ public partial class MainNodeNeural : Node3D
             UseColors = false,
             Mesh = mesh,
             InstanceCount = NeuroInstanceCount,
+            // VisibilityAabb does NOT exist on MultiMeshInstance3D (that
+            // property belongs to GpuParticles3D). MultiMesh has CustomAabb,
+            // and it must cover the entire area where any instance might
+            // appear — otherwise Godot frustum-culls the whole MultiMesh
+            // before any particle spawns. All 200 instances start at
+            // (0,0,0) local with tiny scale, so the auto-computed AABB is
+            // degenerate until the first particle flies — and by then the
+            // cull decision is already made.
+            // Structure local X: [0.10, 1.90], YZ: [-0.5, 0.5]; +0.5 margin.
+            CustomAabb = new Aabb(
+                new Vector3(-0.5f, -1.0f, -1.0f),
+                new Vector3(3.0f, 2.0f, 2.0f)),
         };
         _neuroParticles = new NeuroParticle[NeuroInstanceCount];
 
-        // Initialize all instance transforms to a tiny scale, otherwise
-        // MultiMesh renders all instances at the origin before the first
-        // UpdateNeurotransmitters pass.
         var hidden = new Transform3D(
             Basis.Identity.Scaled(new Vector3(TinyScale, TinyScale, TinyScale)),
             Vector3.Zero);
         for (int i = 0; i < NeuroInstanceCount; i++)
             _neuroMultiMesh.SetInstanceTransform(i, hidden);
 
-        _neuroMultiMesh.CustomAabb = new Aabb(new Vector3(-4, -4, -4), new Vector3(8, 8, 8));
-
         _sceneRoot.AddChild(new MultiMeshInstance3D
         {
             Multimesh = _neuroMultiMesh,
             MaterialOverride = material,
-            CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,   // see below
+                                                                        // No VisibilityAabb — CustomAabb on the MultiMesh does the job.
         });
     }
 
@@ -808,7 +822,7 @@ public partial class MainNodeNeural : Node3D
         var pm = new ParticleProcessMaterial
         {
             EmissionShape = ParticleProcessMaterial.EmissionShapeEnum.Sphere,
-            EmissionSphereRadius = 2.5f,
+            EmissionSphereRadius = 3.0f,   // was 2.5 — world units now, covers structure extent
             Gravity = Vector3.Zero,
             Direction = Vector3.Up,
             Spread = 180f,
@@ -833,7 +847,13 @@ public partial class MainNodeNeural : Node3D
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             VisibilityAabb = new Aabb(new Vector3(-4, -4, -4), new Vector3(8, 8, 8)),
         };
-        _sceneRoot.AddChild(_ambientParticles);
+        // Ambient is a background halo — NOT part of the structure. Adding
+        // it to MainNodeNeural (not SceneRoot) puts its emission sphere in
+        // WORLD space, centred on the camera target (1.0, 0, 0). In
+        // SceneRoot it would be at world X=-1.03 (SceneRoot's position),
+        // which is exactly why the halo was visibly left-shifted.
+        _ambientParticles.Position = new Vector3(1.0f, 0, 0);
+        AddChild(_ambientParticles);
     }
 
     private void SpawnNeurotransmitter(int fromIdx, int toIdx, double startTime)
