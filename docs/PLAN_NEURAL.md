@@ -142,6 +142,14 @@ Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
   UV-offsets (сложно). Brightness даёт 80% эффекта за 5% кода.
   Настоящий jitter — open follow-up (N.4-fix или Phase 3).
 - `speech_music_ratio` — отложено в N.6 (вместе с vad_state и CC).
+- **release**: N.4 делал `SceneRoot.Scale * (1 - release * 0.1)` —
+  мгновенное сжатие всей структуры. N.4-fix заменяет на per-node
+  волну: узлы смещаются к центру по мере прохождения фронта, а не
+  все сразу. `harmonicity` управляет неоднородностью фронта
+  (чистый тон → ровный ripple, шум → хаотичная рябь). Узлы — CPU
+  `SetInstanceTransform`, рёбра — shader с dist-based arrival.
+  Радиусы сжатия те же (~15%), но распределены по времени и
+  пространству.
 
 **VAD / speech** — N.6.
 
@@ -157,7 +165,7 @@ Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
 | `vad_state` | cont | Левый/правый гемисфер: sec. factor × activation | — | — | — |
 | `speech_music_ratio` | cont | Профиль: речь = плотность в Low, музыка = равномерно | — | — | — |
 | `pulse` | event | Seed каскада (X по pan_x) | Волна по hop | Neurotransmitters | — |
-| `release` | event | Сжатие узлов (scale × 0.85 на 400 мс) | Приглушение яркости | — | — |
+| `release` | event | **Волна сжатия** от центра структуры; каждый узел проседает к центру с sin-пиком за 0.4с; неравномерность фронта (опережение/запоздание) управляется `(1 - harmonicity) * 0.3` | — | — | — |
 | `shiver` | event | Яркая вспышка | — | — | Zoom-out ×1.3 |
 | `cortex_flash` | event | Быстрый пик белого | — | — | — |
 | `pitch_height` | event | Hue shift синий→фиолетовый→красный | Hue shift | — | — |

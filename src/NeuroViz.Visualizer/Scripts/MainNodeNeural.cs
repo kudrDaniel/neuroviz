@@ -25,11 +25,24 @@ public partial class MainNodeNeural : Node3D
     private ParamValueRef _shiverState = new();
     private ParamValueRef _cortexFlashState = new();
     private ParamValueRef _pitchState = new();
-    private ParamValueRef _releaseState = new();
     private ShaderMaterial _nodeMaterial = null!;
     private ShaderMaterial _edgeMaterial = null!;
     private double _lastFluxFlashTime = double.NegativeInfinity;
-    private const float SceneRootBaseScale = 2.0f;
+
+    // N.4-fix: release wave state.
+    private float[] _nodeDistNorm = null!;
+    private Vector3[] _nodeBasePos = null!;
+    private float[] _nodePhase = null!;
+    private float _maxNodeDist;
+    private double _waveStartTime = double.NegativeInfinity;
+    private float _waveAmplitude;
+    private double _lastReleaseSetAt = double.NegativeInfinity;
+    private bool _wasWaveActive;
+    private const float WaveDuration = 0.6f;
+    private const float WavePulseDuration = 0.4f;
+    private const float MaxNonuniformity = 0.3f;
+    private const float WaveAmplitude = 0.15f;
+    private static readonly Vector3 StructureCenter = new(1.0f, 0, 0);
 
     // N.3: activation state and hop-cascade queue.
     private float[] _activation = null!;
@@ -103,6 +116,14 @@ public partial class MainNodeNeural : Node3D
         BuildCCEdgeMesh();
         BuildAdjacency();
         _activation = new float[_topology.Nodes.Count];
+
+        PrecomputeNodeWaveData();
+
+        // Edge shader constants that never change at runtime.
+        _edgeMaterial.SetShaderParameter("wave_center", StructureCenter);
+        _edgeMaterial.SetShaderParameter("wave_max_dist", _maxNodeDist);
+        _edgeMaterial.SetShaderParameter("wave_duration", WaveDuration);
+        _edgeMaterial.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
 
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
@@ -353,7 +374,15 @@ public partial class MainNodeNeural : Node3D
             if (frame.Params.TryGetValue("pitch_height", out var ph))
                 _pitchState = new ParamValueRef { Value = ph };
             if (frame.Params.TryGetValue("release", out var rel))
-                _releaseState = new ParamValueRef { Value = rel };
+            {
+                if (rel.SetAtSeconds > _lastReleaseSetAt + 0.001)
+                {
+                    _lastReleaseSetAt = rel.SetAtSeconds;
+                    _waveStartTime = rel.SetAtSeconds;
+                    _waveAmplitude = Mathf.Clamp(rel.Value * WaveAmplitude, 0f, 0.25f);
+                    _wasWaveActive = false;  // force reactivation this frame
+                }
+            }
 
             // N.4 continuous
             if (frame.ContinuousParams.TryGetValue("band_energy.low", out var bl)) _contLow = bl;
@@ -411,22 +440,48 @@ public partial class MainNodeNeural : Node3D
         float shiver = _shiverState.EvaluateAt(nowClock);
         float flash = _cortexFlashState.EvaluateAt(nowClock);
         float pitch = _pitchState.EvaluateAt(nowClock);
-        float release = _releaseState.EvaluateAt(nowClock);
+        // N.4-fix: release wave. Per-node pulse propagates from the structure
+        // centre outward. Nonuniformity (some nodes arrive early, some late)
+        // is driven by (1 - harmonicity): clean tonal material → ordered front
+        // like a water ripple; noisy material → chaotic front like spreading fire.
+        float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
+        float waveElapsed = (float)nowClock - (float)_waveStartTime;
+        bool waveActive = waveElapsed > -MaxNonuniformity
+                       && waveElapsed < WaveDuration + WavePulseDuration + MaxNonuniformity;
 
-        // Global brightness: shiver (novelty, 1s decay) + cortex_flash (400ms).
-        float globalBrightness = 1.0f + shiver * 0.8f + flash * 1.5f;
-        _nodeMaterial.SetShaderParameter("global_brightness", globalBrightness);
+        if (waveActive)
+        {
+            float nowF = (float)nowClock;
+            float startF = (float)_waveStartTime;
+            for (int i = 0; i < _topology.Nodes.Count; i++)
+            {
+                float arrival = startF + _nodeDistNorm[i] * WaveDuration + _nodePhase[i] * nonuniformity;
+                float el = nowF - arrival;
+                float pulse = 0f;
+                if (el > 0f && el < WavePulseDuration)
+                    pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
 
-        // Edge coherence from harmonicity: 0.4 (noise) .. 1.0 (pure tone).
-        float coherence = 0.4f + _smoothHarmonicity * 0.6f;
-        _edgeMaterial.SetShaderParameter("coherence", coherence);
+                float factor = 1f - _waveAmplitude * pulse;
+                var newPos = StructureCenter + (_nodeBasePos[i] - StructureCenter) * factor;
+                _nodeMultimesh.SetInstanceTransform(i, new Transform3D(Basis.Identity, newPos));
+            }
+            _edgeMaterial.SetShaderParameter("wave_start", startF);
+            _edgeMaterial.SetShaderParameter("wave_amplitude", _waveAmplitude);
+            _wasWaveActive = true;
+        }
+        else if (_wasWaveActive)
+        {
+            // Wave just ended — one final reset to base, then idle until next fire.
+            for (int i = 0; i < _topology.Nodes.Count; i++)
+                _nodeMultimesh.SetInstanceTransform(i, new Transform3D(Basis.Identity, _nodeBasePos[i]));
+            _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
+            _wasWaveActive = false;
+            _waveAmplitude = 0f;
+        }
 
-        // Release → global compression 10%, centroid preserved at world X=0.97.
-        // Recompute position each frame because scale changes; hardcoding
-        // posX = 0.97 - scale works because local centroid is at X=1.0.
-        float scale = SceneRootBaseScale * (1f - release * 0.1f);
-        _sceneRoot.Scale = new Vector3(scale, scale, scale);
-        _sceneRoot.Position = new Vector3(0.97f - scale, 0, 0);
+        // current_time must always update — shader computes elapsed against it
+        // and stale values would give nonzero pulse after the wave ended.
+        _edgeMaterial.SetShaderParameter("current_time", (float)nowClock);
 
         UpdateNodeColors(pitch);
 
@@ -437,10 +492,10 @@ public partial class MainNodeNeural : Node3D
         _fpsLabel.Text =
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"Pending: {_pending.Count} | Active: {activeCount}\n" +
+            $"wave: {(_wasWaveActive ? $"ACTIVE {_waveAmplitude:F2}" : "idle")} | " +
+            $"nonunif: {nonuniformity:F2}\n" +
             $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
-            $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2}\n" +
-            $"shiver: {shiver:F2} | flash: {flash:F2} | pitch: {pitch:F2} | rel: {release:F2} | " +
-            $"bright: {globalBrightness:F2}";
+            $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2}";
     }
 
     private void BuildAdjacency()
@@ -547,6 +602,35 @@ public partial class MainNodeNeural : Node3D
                 .Lerp(new Color(1.00f, 0.55f, 0.10f), (act - 0.3f) / 0.4f);
         return new Color(1.00f, 0.55f, 0.10f)
             .Lerp(new Color(1.00f, 0.95f, 0.25f), (act - 0.7f) / 0.3f);
+    }
+
+    private void PrecomputeNodeWaveData()
+    {
+        int n = _topology.Nodes.Count;
+        _nodeBasePos = new Vector3[n];
+        _nodeDistNorm = new float[n];
+        _nodePhase = new float[n];
+
+        // Deterministic phase — different seed from _pulseRng so cascade
+        // seed choice and wave jitter decorrelate across runs.
+        var waveRng = new Random(1337);
+
+        float maxDist = 0f;
+        for (int i = 0; i < n; i++)
+        {
+            _nodeBasePos[i] = _topology.Nodes[i].Position;
+            float dist = (_nodeBasePos[i] - StructureCenter).Length();
+            if (dist > maxDist) maxDist = dist;
+        }
+        _maxNodeDist = maxDist > 1e-6f ? maxDist : 1.0f;
+
+        for (int i = 0; i < n; i++)
+        {
+            _nodeDistNorm[i] = (_nodeBasePos[i] - StructureCenter).Length() / _maxNodeDist;
+            _nodePhase[i] = (float)(waveRng.NextDouble() * 2.0 - 1.0);   // [-1, 1]
+        }
+
+        GD.Print($"[Neural] Wave precompute: maxDist={_maxNodeDist:F3}");
     }
 
     public override void _ExitTree() => _ipc.Dispose();
