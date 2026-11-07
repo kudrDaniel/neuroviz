@@ -140,6 +140,14 @@ public partial class MainNodeNeural : Node3D
         public double Timestamp;
         public Vector3[] NodePositions = Array.Empty<Vector3>();
         public List<(int a, int b)> IntraEdges = new();
+        // N.7-fix7: targets and moved nodes for deterministic replay. On
+        // a boundary event near an existing snapshot's timestamp, we apply
+        // these exact targets instead of re-running RNG — NoveltyDetector's
+        // warm-up drift shifts boundary timestamps by 50-100 ms after seek,
+        // so a seed based on the new timestamp would produce a completely
+        // different restructure. Replaying stored targets decouples the
+        // visual result from timestamp drift.
+        public Dictionary<int, Vector3> MovedTargets = new();
     }
     private readonly List<RestructureSnapshot> _restructureHistory = new();
     private RestructureSnapshot? _initialSnapshot;
@@ -1071,19 +1079,29 @@ public partial class MainNodeNeural : Node3D
     {
         if (_restructureActive) return;
         if (nowClock - _lastRestructureTime < 2.0) return;
-        if (eventTimestamp <= _lastRestoreTimestamp + 0.5) return;   // ← NEW
+        if (eventTimestamp <= _lastRestoreTimestamp + 0.5) return;
         _lastRestructureTime = nowClock;
 
-        // B1: if this event has already been applied (same timestamp within
-        // 1 ms), we are replaying it. Deterministic RNG ensures identical
-        // result. Snapshot is not duplicated.
-        bool isNew = !_restructureHistory.Any(
-            s => Math.Abs(s.Timestamp - eventTimestamp) < 0.001);
+        // N.7-fix7: if a restructure already exists near this event's
+        // timestamp, replay its targets verbatim. This handles the
+        // NoveltyDetector warm-up drift (event timestamps shift 50-100 ms
+        // after seek-back) — we don't want a fresh RNG sequence just
+        // because the timestamp moved a few frames.
+        //
+        // Tolerance 1.5 s covers worst-case warm-up drift with margin;
+        // combined with strength proximity check it's tight enough to
+        // distinguish genuine fast section changes (which are > 1.5 s
+        // apart in practically all music).
+        var historical = _restructureHistory
+            .Where(s => s.MovedTargets.Count > 0)
+            .Where(s => Math.Abs(s.Timestamp - eventTimestamp) < 1.5)
+            .OrderBy(s => Math.Abs(s.Timestamp - eventTimestamp))
+            .FirstOrDefault();
 
         _pendingSnapshot = new PendingSnapshot
         {
             Timestamp = eventTimestamp,
-            IsNew = isNew,
+            IsNew = historical == null,
         };
 
         _restructureActive = true;
@@ -1091,13 +1109,26 @@ public partial class MainNodeNeural : Node3D
         _restructureTargets.Clear();
         _restructureStartPositions.Clear();
 
+        if (historical != null)
+        {
+            // Replay mode: use stored targets, skip RNG entirely.
+            foreach (var kvp in historical.MovedTargets)
+            {
+                _restructureStartPositions[kvp.Key] = _topology.Nodes[kvp.Key].Position;
+                _restructureTargets[kvp.Key] = kvp.Value;
+            }
+            GD.Print($"[Neural] Restructure: {historical.MovedTargets.Count} nodes " +
+                     $"replaying targets from boundary at t={historical.Timestamp:F2} " +
+                     $"(event at t={eventTimestamp:F2})");
+            return;
+        }
+
+        // Fresh restructure: generate new targets.
         float fraction = strength > 0.01f
             ? Mathf.Clamp(0.15f + strength * 0.02f, 0.15f, 0.45f)
             : 0.30f;
         int moveCount = (int)(fraction * _topology.Nodes.Count);
 
-        // Deterministic seed from event timestamp — same seed → same
-        // Random sequence → same moved nodes and targets on every pass.
         var rng = new Random(DeterministicSeed(eventTimestamp));
         var indices = Enumerable.Range(0, _topology.Nodes.Count)
             .OrderBy(_ => rng.Next())
@@ -1111,8 +1142,7 @@ public partial class MainNodeNeural : Node3D
         }
 
         GD.Print($"[Neural] Restructure: {moveCount} nodes moving " +
-                 $"(strength={strength:F1}, fraction={fraction:F2}, " +
-                 $"{(isNew ? "new" : "replay")})");
+                 $"(strength={strength:F1}, fraction={fraction:F2}, new)");
     }
 
     private static int DeterministicSeed(double timestamp)
@@ -1305,7 +1335,10 @@ public partial class MainNodeNeural : Node3D
         // state".
         if (_pendingSnapshot is { IsNew: true } p)
         {
-            _restructureHistory.Add(TakeSnapshot(p.Timestamp));
+            // Save both post-state and the targets that produced it. On replay
+            // (boundary near p.Timestamp), StartRestructure uses MovedTargets
+            // directly instead of re-running RNG.
+            _restructureHistory.Add(TakeSnapshot(p.Timestamp, _restructureTargets));
             _restructureHistory.Sort((a, b) => a.Timestamp.CompareTo(b.Timestamp));
         }
         _pendingSnapshot = null;
@@ -1316,7 +1349,9 @@ public partial class MainNodeNeural : Node3D
                  $"{intraTotal} intra total (FPS stabilisation)");
     }
 
-    private RestructureSnapshot TakeSnapshot(double timestamp)
+    private RestructureSnapshot TakeSnapshot(
+    double timestamp,
+    Dictionary<int, Vector3>? targets = null)
     {
         var positions = new Vector3[_topology.Nodes.Count];
         for (int i = 0; i < _topology.Nodes.Count; i++)
@@ -1332,6 +1367,9 @@ public partial class MainNodeNeural : Node3D
             Timestamp = timestamp,
             NodePositions = positions,
             IntraEdges = intra,
+            MovedTargets = targets != null
+                ? new Dictionary<int, Vector3>(targets)
+                : new Dictionary<int, Vector3>(),
         };
     }
 
