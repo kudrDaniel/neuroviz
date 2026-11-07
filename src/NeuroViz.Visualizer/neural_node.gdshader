@@ -21,5 +21,9 @@ void fragment() {
 
     // Quadratic falloff: act=0.3 → 0.09 → subtle; act=1.0 → 1.0 → pop.
     float glow = v_activation * v_activation;
+    // HDR emission: peak values reach ~4.3 (act=1, global_brightness=2),
+    // well above the 1.0 glow threshold. Low activation stays below
+    // threshold — only active/flashing nodes bloom, not the whole base
+    // palette.
     EMISSION = v_albedo * (0.15 + glow * 2.0) * global_brightness;
 }

@@ -50,4 +50,5 @@ void vertex() {
 void fragment() {
     ALBEDO = v_color * coherence * bundle_energy;
     ALPHA = v_alpha;
+    EMISSION = v_color * bundle_energy * 0.3;   // только активные CC светятся, ярче при высоком bundle_energy
 }

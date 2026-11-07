@@ -279,6 +279,16 @@ public partial class MainNodeNeural : Node3D
             // tan palette actually look tan.
             AmbientLightColor = new Color(0.10f, 0.07f, 0.05f),
             AmbientLightEnergy = 1.0f,
+
+            // N.10-fix3: glow (bloom). Makes emissive nodes / neurotransmitters
+            // bleed into surrounding space — the "radiation" look. Works in
+            // gl_compatibility; volumetric fog would require forward_plus (step 2).
+            GlowEnabled = true,
+            GlowIntensity = 0.8f,
+            GlowStrength = 1.0f,
+            GlowBloom = 0.1f,           // slight softness, not a blurry blob
+            GlowHdrThreshold = 1.0f,    // only HDR pixels (emission > 1.0) bloom
+            GlowBlendMode = Godot.Environment.GlowBlendModeEnum.Additive,
         };
         AddChild(new WorldEnvironment { Environment = env });
     }
