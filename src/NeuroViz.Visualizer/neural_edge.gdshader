@@ -2,10 +2,8 @@ shader_type spatial;
 render_mode unshaded, blend_mix;
 
 uniform float coherence = 1.0;
+uniform float bundle_energy = 1.0;   // ← N.6
 
-// N.4-fix: release wave uniforms. All in SceneRoot-local space —
-// edge meshes are direct children of SceneRoot with identity
-// transform, so VERTEX here is in the same space as node.Position.
 uniform vec3  wave_center = vec3(1.0, 0.0, 0.0);
 uniform float wave_max_dist = 1.145;
 uniform float wave_start = -1.0e10;
@@ -18,9 +16,6 @@ varying vec3 v_color;
 varying float v_alpha;
 
 void vertex() {
-    // Wave factor from dist-based arrival — no per-node jitter on edges
-    // (1px lines, jitter invisible; keeping edges smooth avoids edge/
-    // node disconnect during the wavefront).
     float dist = length(VERTEX - wave_center);
     float dist_norm = dist / wave_max_dist;
     float arrival = wave_start + dist_norm * wave_duration;
@@ -31,12 +26,11 @@ void vertex() {
     }
     float factor = 1.0 - wave_amplitude * pulse;
     VERTEX = wave_center + (VERTEX - wave_center) * factor;
-
     v_color = COLOR.rgb;
     v_alpha = COLOR.a;
 }
 
 void fragment() {
-    ALBEDO = v_color * coherence;
+    ALBEDO = v_color * coherence * bundle_energy;
     ALPHA = v_alpha;
 }

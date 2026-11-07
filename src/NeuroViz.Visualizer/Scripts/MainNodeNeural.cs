@@ -22,6 +22,9 @@ public partial class MainNodeNeural : Node3D
     private float _contHigh, _smoothHigh;
     private float _contFlux, _smoothFlux;
     private float _contHarmonicity, _smoothHarmonicity;
+    // N.6: continuous inputs for hemisphere bias and node scaling.
+    private float _contVad, _smoothVad;
+    private float _contSmr, _smoothSmr;
     private ParamValueRef _shiverState = new();
     private ParamValueRef _cortexFlashState = new();
     private ParamValueRef _pitchState = new();
@@ -29,6 +32,10 @@ public partial class MainNodeNeural : Node3D
     private ShaderMaterial _edgeMaterial = null!;
     private double _lastFluxFlashTime = double.NegativeInfinity;
     private double _lastFrameClock = double.NegativeInfinity;
+
+    // N.6: three separate CC materials (one per layer) so each bundle
+    // reacts to its own band_energy independently.
+    private ShaderMaterial[] _ccMaterials = new ShaderMaterial[3];
 
     // N.4-fix: release wave state.
     private float[] _nodeDistNorm = null!;
@@ -271,34 +278,58 @@ public partial class MainNodeNeural : Node3D
     // crossed). Arcs give the CC bundle its visual identity.
     private void BuildCCEdgeMesh()
     {
-        var cc = _topology.Edges.Where(e => e.IsCrossCallosum).ToList();
-        const int segmentsPerArc = 8;
-        var vertices = new List<Vector3>(cc.Count * segmentsPerArc * 2);
-        var colors = new List<Color>(cc.Count * segmentsPerArc * 2);
-
-        foreach (var edge in cc)
+        // Split CC edges into per-layer buckets. Each bucket gets its own
+        // MeshInstance3D + ShaderMaterial so band_energy.low/mid/high can
+        // drive per-layer bundle brightness without vertex-color rebuilds.
+        var ccByLayer = new List<NeuralEdge>[] { new(), new(), new() };
+        foreach (var edge in _topology.Edges.Where(e => e.IsCrossCallosum))
         {
-            var a = _topology.Nodes[edge.A];
-            var b = _topology.Nodes[edge.B];
-            var control = CCControlPoint(a.Position, b.Position, a.Layer);
-            var color = CCBaseColor(a.Layer);
-
-            var prev = a.Position;
-            for (int s = 1; s <= segmentsPerArc; s++)
-            {
-                float t = s / (float)segmentsPerArc;
-                var curr = BezierQuadratic(a.Position, control, b.Position, t);
-                vertices.Add(prev); vertices.Add(curr);
-                colors.Add(color); colors.Add(color);
-                prev = curr;
-            }
+            int layer = _topology.Nodes[edge.A].Layer;
+            ccByLayer[layer].Add(edge);
         }
 
-        _sceneRoot.AddChild(new MeshInstance3D
+        const int segmentsPerArc = 8;
+
+        for (int layer = 0; layer < 3; layer++)
         {
-            Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray()),
-            MaterialOverride = _edgeMaterial,
-        });
+            var edges = ccByLayer[layer];
+            if (edges.Count == 0) continue;
+
+            var vertices = new List<Vector3>(edges.Count * segmentsPerArc * 2);
+            var colors = new List<Color>(edges.Count * segmentsPerArc * 2);
+
+            foreach (var edge in edges)
+            {
+                var a = _topology.Nodes[edge.A];
+                var b = _topology.Nodes[edge.B];
+                var control = CCControlPoint(a.Position, b.Position, a.Layer);
+                var color = CCBaseColor(a.Layer);
+
+                var prev = a.Position;
+                for (int s = 1; s <= segmentsPerArc; s++)
+                {
+                    float t = s / (float)segmentsPerArc;
+                    var curr = BezierQuadratic(a.Position, control, b.Position, t);
+                    vertices.Add(prev); vertices.Add(curr);
+                    colors.Add(color); colors.Add(color);
+                    prev = curr;
+                }
+            }
+
+            var mat = new ShaderMaterial { Shader = _edgeMaterial.Shader };
+            // CC uses bundle_energy only; coherence stays at 1.0 so
+            // harmonicity doesn't dim the commisure highways — those are
+            // structural, not tone-quality-driven.
+            mat.SetShaderParameter("coherence", 1.0f);
+            mat.SetShaderParameter("bundle_energy", 1.0f);
+            _ccMaterials[layer] = mat;
+
+            _sceneRoot.AddChild(new MeshInstance3D
+            {
+                Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray()),
+                MaterialOverride = mat,
+            });
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────
@@ -416,6 +447,8 @@ public partial class MainNodeNeural : Node3D
             if (frame.ContinuousParams.TryGetValue("band_energy.high", out var bh)) _contHigh = bh;
             if (frame.ContinuousParams.TryGetValue("spectral_flux", out var fl)) _contFlux = fl;
             if (frame.ContinuousParams.TryGetValue("harmonicity", out var hm)) _contHarmonicity = hm;
+            if (frame.ContinuousParams.TryGetValue("vad_state", out var vd)) _contVad = vd;
+            if (frame.ContinuousParams.TryGetValue("speech_music_ratio", out var sm)) _contSmr = sm;
         }
 
         double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
@@ -442,6 +475,10 @@ public partial class MainNodeNeural : Node3D
         _smoothHigh = Mathf.Lerp(_smoothHigh, _contHigh, kb);
         _smoothFlux = Mathf.Lerp(_smoothFlux, _contFlux, kf);
         _smoothHarmonicity = Mathf.Lerp(_smoothHarmonicity, _contHarmonicity, kb);
+        _smoothVad = Mathf.Lerp(_smoothVad, _contVad, kb);
+        // smr is already EMA-smoothed in VadDetector (τ ≈ 2 s); light kb
+        // smoothing on top removes per-tick jitter without adding perceptible lag.
+        _smoothSmr = Mathf.Lerp(_smoothSmr, _contSmr, kb);
 
         // Decay activation, THEN process pending (order matters — see N.3).
         float decay = Mathf.Exp(-dt / 0.4f);
@@ -482,7 +519,7 @@ public partial class MainNodeNeural : Node3D
                 // edges from the same node, reads as "signal branches". Still bounded
                 // by the 200-slot pool; at drum-n-bass tempo DropOldest handles the
                 // overflow.
-                for (int k = 0; k < 2 && neighbors.Count > 0; k++)
+                for (int k = 0; k < 1 && neighbors.Count > 0; k++)
                 {
                     int chosen = neighbors[_pulseRng.Next(neighbors.Count)];
                     SpawnNeurotransmitter(idx, chosen, at);
@@ -499,45 +536,25 @@ public partial class MainNodeNeural : Node3D
         // is driven by (1 - harmonicity): clean tonal material → ordered front
         // like a water ripple; noisy material → chaotic front like spreading fire.
         float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
-        float waveElapsed = (float)nowClock - (float)_waveStartTime;
-        bool waveActive = waveElapsed > -MaxNonuniformity
-                       && waveElapsed < WaveDuration + WavePulseDuration + MaxNonuniformity;
-
-        if (waveActive)
-        {
-            float nowF = (float)nowClock;
-            float startF = (float)_waveStartTime;
-            for (int i = 0; i < _topology.Nodes.Count; i++)
-            {
-                float arrival = startF + _nodeDistNorm[i] * WaveDuration + _nodePhase[i] * nonuniformity;
-                float el = nowF - arrival;
-                float pulse = 0f;
-                if (el > 0f && el < WavePulseDuration)
-                    pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
-
-                float factor = 1f - _waveAmplitude * pulse;
-                var newPos = StructureCenter + (_nodeBasePos[i] - StructureCenter) * factor;
-                _nodeMultimesh.SetInstanceTransform(i, new Transform3D(Basis.Identity, newPos));
-            }
-            _edgeMaterial.SetShaderParameter("wave_start", startF);
-            _edgeMaterial.SetShaderParameter("wave_amplitude", _waveAmplitude);
-            _wasWaveActive = true;
-        }
-        else if (_wasWaveActive)
-        {
-            // Wave just ended — one final reset to base, then idle until next fire.
-            for (int i = 0; i < _topology.Nodes.Count; i++)
-                _nodeMultimesh.SetInstanceTransform(i, new Transform3D(Basis.Identity, _nodeBasePos[i]));
-            _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
-            _wasWaveActive = false;
-            _waveAmplitude = 0f;
-        }
-
-        // current_time must always update — shader computes elapsed against it
-        // and stale values would give nonzero pulse after the wave ended.
-        _edgeMaterial.SetShaderParameter("current_time", (float)nowClock);
+        UpdateNodeTransforms(nowClock, nonuniformity);
 
         UpdateNodeColors(pitch);
+
+        // CC bundles: each layer's brightness tracks its band_energy. Range
+        // [0.5, 2.0] — dimmer than baseline at silence, brighter than baseline
+        // at saturation. Layer 0/1/2 = Low/Mid/High CC commisure.
+        for (int layer = 0; layer < 3; layer++)
+        {
+            if (_ccMaterials[layer] == null) continue;
+            float bandEnergy = layer switch
+            {
+                0 => _smoothLow,
+                1 => _smoothMid,
+                _ => _smoothHigh,
+            };
+            float bundleBrightness = 0.5f + bandEnergy * 1.5f;
+            _ccMaterials[layer].SetShaderParameter("bundle_energy", bundleBrightness);
+        }
 
         UpdateNeurotransmitters(nowClock);
 
@@ -557,7 +574,8 @@ public partial class MainNodeNeural : Node3D
             $"wave: {(_wasWaveActive ? $"ACTIVE {_waveAmplitude:F2}" : "idle")} | " +
             $"nonunif: {nonuniformity:F2}\n" +
             $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
-            $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2}";
+            $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2} | " +
+            $"vad: {_smoothVad:F2} | smr: {_smoothSmr:F2}";
     }
 
     private void BuildAdjacency()
@@ -613,6 +631,63 @@ public partial class MainNodeNeural : Node3D
         }
     }
 
+    /// <summary>
+    /// Single place where node instance transforms are written. Combines:
+    /// - Release wave (N.4-fix): position moves toward StructureCenter
+    ///   during the ~1s window after a release event.
+    /// - Speech scale (N.6): speech_music_ratio shrinks nodes by up to 15%
+    ///   (voice = focused, dense network; music = dispersed, full-size).
+    /// One SetInstanceTransform per node per frame. Same order as the
+    /// per-frame SetInstanceColor in UpdateNodeColors — 2 writes per node
+    /// total, well within 60 FPS budget.
+    /// </summary>
+    private void UpdateNodeTransforms(double nowClock, float nonuniformity)
+    {
+        float nowF = (float)nowClock;
+        float startF = (float)_waveStartTime;
+        bool waveActive = nowF > startF - MaxNonuniformity
+                       && nowF < startF + WaveDuration + WavePulseDuration + MaxNonuniformity;
+
+        // Speech mode: 0 = music (full size), 1 = speech (15% smaller).
+        float baseScale = 1.0f - _smoothSmr * 0.15f;
+        var scaleBasis = Basis.Identity.Scaled(
+            new Vector3(baseScale, baseScale, baseScale));
+
+        for (int i = 0; i < _topology.Nodes.Count; i++)
+        {
+            var pos = _nodeBasePos[i];
+
+            if (waveActive)
+            {
+                float arrival = startF + _nodeDistNorm[i] * WaveDuration
+                              + _nodePhase[i] * nonuniformity;
+                float el = nowF - arrival;
+                float pulse = 0f;
+                if (el > 0f && el < WavePulseDuration)
+                    pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
+
+                float factor = 1f - _waveAmplitude * pulse;
+                pos = StructureCenter + (_nodeBasePos[i] - StructureCenter) * factor;
+            }
+
+            _nodeMultimesh.SetInstanceTransform(i, new Transform3D(scaleBasis, pos));
+        }
+
+        if (waveActive)
+        {
+            _edgeMaterial.SetShaderParameter("wave_start", startF);
+            _edgeMaterial.SetShaderParameter("wave_amplitude", _waveAmplitude);
+            _wasWaveActive = true;
+        }
+        else if (_wasWaveActive)
+        {
+            _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
+            _wasWaveActive = false;
+            _waveAmplitude = 0f;
+        }
+        _edgeMaterial.SetShaderParameter("current_time", nowF);
+    }
+
     private void UpdateNodeColors(float pitch)
     {
         // Subtle violet shift at high pitch — the base beige palette stays
@@ -636,6 +711,16 @@ public partial class MainNodeNeural : Node3D
                 _ => _smoothHigh,
             };
             float continuousContrib = layerEnergy * 0.4f;
+
+            // N.6: vad_state → hemisphere bias. Voice detected (vad=1) → left
+            // hemisphere (index 0) gets +0.15 baseline activation, right +0.05.
+            // Reads as "when there's voice, the left side of the network glows
+            // faintly even without a cascade" — a subtle but distinct channel
+            // from pan_x's seed-hemisphere selection.
+            float hemiBias = node.Hemisphere == 0
+                ? _smoothVad * 0.15f
+                : _smoothVad * 0.05f;
+            continuousContrib += hemiBias;
 
             // Max, not sum — cascade and continuous don't double up.
             float effAct = Mathf.Clamp(Mathf.Max(_activation[i], continuousContrib), 0f, 1f);
@@ -748,8 +833,8 @@ public partial class MainNodeNeural : Node3D
     {
         var mesh = new SphereMesh
         {
-            Radius = 0.025f,             // was 0.015 — ~10 px at typical view, visible
-            Height = 0.05f,
+            Radius = 0.0075f,             // was 0.015 — ~10 px at typical view, visible
+            Height = 0.015f,
             RadialSegments = 6,
             Rings = 4,
         };

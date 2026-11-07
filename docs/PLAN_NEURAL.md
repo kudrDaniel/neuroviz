@@ -165,6 +165,14 @@ Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
 
 **VAD / speech** — N.6.
 
+**CC bundles (N.6):** каждый bundle (Low/Mid/High) — отдельный
+`MeshInstance3D` со своим `ShaderMaterial` (один shader). Brightness =
+`0.5 + band_energy[layer] * 1.5` ∈ [0.5, 2.0]. CC edges не получают
+`coherence` от harmonicity (`coherence = 1.0` зафиксировано) —
+это «структурные магистрали», не зависящие от тональности. При
+`stream_boundary` (N.7) топология bundle'ов изменится, но материал-канал
+останется тем же.
+
 ### Interaction table (ядро «системы»)
 
 | Параметр | Тип | Узлы | Рёбра | Частицы | Камера |
@@ -174,8 +182,8 @@ Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
 | `band_energy.high` | cont | High-слой: scale + emissive | CC-High bundle подсветка | — | — |
 | `spectral_flux` | cont | Random flash поверх каскада | — | Burst-emission | — |
 | `harmonicity` | cont | — | Coherence: 1 → прямые, 0 → дрожат (noise offset) | — | — |
-| `vad_state` | cont | Левый/правый гемисфер: sec. factor × activation | — | — | — |
-| `speech_music_ratio` | cont | Профиль: речь = плотность в Low, музыка = равномерно | — | — | — |
+| `vad_state` | cont | Левый гемисфер: +0.15×vad baseline activation; правый +0.05×vad | — | — | — |
+| `speech_music_ratio` | cont | Масштаб узлов: 1.0 - smr*0.15 (speech = мельче/плотнее) | — | — | — |
 | `pulse` | event | Seed каскада (X по pan_x) | Волна по hop | Neurotransmitters | — |
 | `release` | event | **Волна сжатия** от центра структуры; каждый узел проседает к центру с sin-пиком за 0.4с; неравномерность фронта (опережение/запоздание) управляется `(1 - harmonicity) * 0.3` | — | — | — |
 | `shiver` | event | Яркая вспышка | — | — | Zoom-out ×1.3 |
