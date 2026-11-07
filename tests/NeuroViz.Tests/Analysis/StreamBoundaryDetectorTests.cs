@@ -168,23 +168,33 @@ public class StreamBoundaryDetectorTests
     }
 
     [Fact]
-    public void OnSeek_PreservesOpenState_AdjustsTimers()
+    public void OpenEvent_CarriesNoveltyStrength()
     {
-        var det = new StreamBoundaryDetector(closeAfterSeconds: 5.0);
-        det.OnEventEmitted(Novelty(10.0, 0.9f)).ToList();
-        det.OnEventEmitted(Novelty(11.0, 0.9f)).ToList();   // open at t=11
-        det.Process(Frame(12.0)).ToList();                   // no close (1s)
+        var det = new StreamBoundaryDetector();
+        Assert.Empty(det.OnEventEmitted(Novelty(1.0, confidence: 0.9f, magnitude: 6.5f)));
+        var opened = det.OnEventEmitted(Novelty(2.0, confidence: 0.9f, magnitude: 6.5f)).ToList();
 
-        // Seek from 12 to 42 (delta +30).
-        det.OnSeek(12.0, 42.0);
+        var ev = Assert.Single(opened);
+        Assert.Equal(6.5f, ev.Params["strength"], 3);
+    }
 
-        // Frame at 43 → 2s since lastStrong (was 11+30=41) → no close.
-        Assert.Empty(det.Process(Frame(43.0)));
+    [Fact]
+    public void OnSeek_ResetsOpenState_ReEmitsOpenOnReplay()
+    {
+        var det = new StreamBoundaryDetector();
+        det.OnEventEmitted(Novelty(1.0, 0.9f)).ToList();
+        var firstOpen = det.OnEventEmitted(Novelty(2.0, 0.9f)).ToList();
+        Assert.Single(firstOpen);
+        Assert.Equal(1f, firstOpen[0].Params["open"]);
 
-        // Frame at 47 → 6s since lastStrong → close.
-        var closed = det.Process(Frame(47.0)).ToList();
-        Assert.Single(closed);
-        Assert.Equal(0f, closed[0].Params["open"]);
+        // Seek backward while open — detector must reset, not stay open.
+        det.OnSeek(10.0, 1.0);
+
+        // Replay through the same novelty pattern → open must fire again.
+        Assert.Empty(det.OnEventEmitted(Novelty(3.0, 0.9f)));
+        var secondOpen = det.OnEventEmitted(Novelty(4.0, 0.9f)).ToList();
+        Assert.Single(secondOpen);
+        Assert.Equal(1f, secondOpen[0].Params["open"]);
     }
 
     // ── helpers ─────────────────────────────────────────────────────

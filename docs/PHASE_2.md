@@ -64,6 +64,44 @@ Launch из `settings.json`. Fullscreen на monitor N, всегда сверх�
 
 ---
 
+### P2-C — 3D-сцены
+
+**Две независимые 3D-сцены**, выбор через Settings → Visualizer scene.
+
+**Spike (`MainNode3D` / `spike.tscn`) — «спокойная»:**
+- Icosphere с simplex-noise шипами, шум анимирован (дрейф по поверхности).
+- `harmonicity` → spikiness, `band_energy.low` → displacement,
+  `pulse` → attack burst, `release` → compression.
+- Палитра от `band_energy.high` (яркость), `pitch_height` (hue),
+  `shiver` (оранжевый), `cortex_flash` (белая вспышка).
+- Частицы: ambient (density от `band_energy.mid`), burst (от flux),
+  pan (сдвиг), trajectory (Fast/Reverse/Idle от `stream_boundary`).
+- Idle orbit + novelty zoom-out. Тени, finite-diff normals.
+
+**Neural (`MainNodeNeural` / `neural.tscn`) — «комплексная»:**
+- Двухполушарная сеть (1600 узлов, ~3800 рёбер, CC-магистрали).
+- Слои по X: Low → Mid → High (спектральная семантика).
+- Hop-cascade от `pulse` (волна вспышек от seed через рёбра).
+- **Эволюционная перестройка** на `stream_boundary`: часть узлов
+  двигается внутри слоёв, связи рвутся и формируются заново.
+  Snapshots (B1) обеспечивают детерминированный replay.
+- Wave сжатия на `release` (от центра структуры).
+- Палитра: cold→warm база (беж→тан), активация red→orange→yellow.
+- CC bundles: per-layer brightness от `band_energy`, независимы от
+  `harmonicity` (структурные магистрали).
+- VAD: `vad_state` → гемисфер bias, `speech_music_ratio` → scale узлов.
+- Частицы: нейротрансмиттеры (фиолетовые, по рёбрам на hop),
+  ambient halo (density от `band_energy.mid`).
+- Idle orbit + novelty zoom-out. Glow (bloom) для «настоящего»
+  излучения. Тени, simplex-noise.
+
+**Настройки** (Settings UI):
+- Scene selector (`2d` / `spike` / `neural`).
+- Spike: camera orbit speed, Y amplitude, particle counts.
+- Neural: nodes/hemisphere (200–1500), edges/node (2–6),
+  CC density (0.1–1.0), camera orbit speed, camera Y amplitude.
+- Топология применяется при Launch/SceneChange; камера — live.
+
 ## Phase 2.5+ (после Phase 2)
 
 Не в обозримом будущем — отдельные итерации:
@@ -93,6 +131,13 @@ BASS libs для Linux/macOS, проверка NamedPipe/MMF на Unix. 1 нед
 ### Heatmap spectrum
 
 Полноценная спектрограмма в Debug-режиме. 2–3 дня.
+
+### Volumetric fog для neural (Phase 2.5)
+
+Требует `forward_plus` рендерера. Мощный визуальный апгрейд:
+эмиссивные узлы и CC-магистрали светятся в 3D-тумане, god-rays,
+объёмная глубина. Не блокирует текущую neural-сцену (Glow/bloom
+даёт 80% эффекта). Детали — `PLAN_NEURAL.md §11`.
 
 ---
 

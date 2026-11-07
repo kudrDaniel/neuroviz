@@ -82,19 +82,21 @@ public partial class MainWindow : Window
     private async void OnSettingsClicked(object? sender, RoutedEventArgs e)
     {
         var oldRulesPath = ViewModel.Settings.RulesPath;
+        var oldScene = ViewModel.Settings.VisualizerScene;
         var dialog = new SettingsWindow(ViewModel.Settings);
         var saved = await dialog.ShowDialog<bool>(this);
         if (!saved) return;
 
+        if (!string.Equals(ViewModel.Settings.VisualizerScene, oldScene, StringComparison.Ordinal))
+        {
+            // Scene changed — apply live to running Godot (no restart needed).
+            ViewModel.ApplyVisualizerScene(ViewModel.Settings.VisualizerScene);
+        }
+
         if (!string.Equals(ViewModel.Settings.RulesPath, oldRulesPath, StringComparison.Ordinal))
-        {
-            ViewModel.StatusText =
-                "Settings saved. Rules path changed — click Reload Rules to apply.";
-        }
-        else
-        {
+            ViewModel.StatusText = "Settings saved. Rules path changed — click Reload Rules to apply.";
+        else if (string.Equals(ViewModel.Settings.VisualizerScene, oldScene, StringComparison.Ordinal))
             ViewModel.StatusText = "Settings saved.";
-        }
     }
 
     private async void OnLaunchVisualizerClicked(object? sender, RoutedEventArgs e)

@@ -41,6 +41,15 @@ public sealed class IpcClient : IDisposable
     /// </summary>
     public event Action<SetVisualConfigPayload>? VisualConfigReceived;
 
+    /// <summary>
+    /// Path to the scene a SetVisualizerScene command asked us to switch to.
+    /// Set by HandleControlMessage (background thread), consumed and cleared
+    /// by the active scene's _Process (main thread, safe place for ChangeSceneToFile).
+    /// </summary>
+    public string? PendingScenePath { get; private set; }
+
+    public void ClearPendingScene() => PendingScenePath = null;
+
     public void Start()
     {
         _ = Task.Run(ConnectControlPipeAsync);
@@ -198,7 +207,32 @@ public sealed class IpcClient : IDisposable
             case ControlKinds.SetVisualConfig:
                 var visual = MessagePackSerializer.Deserialize<SetVisualConfigPayload>(
                     msg.Payload, MessagePackOptions.Default);
+                NeuralSceneConfig.CameraOrbitSpeed = visual.NeuralCameraOrbitSpeed;
+                NeuralSceneConfig.CameraYAmplitude = visual.NeuralCameraYAmplitude;
                 _pendingMainThreadActions.Enqueue(() => VisualConfigReceived?.Invoke(visual));
+                break;
+            case ControlKinds.SetVisualizerScene:
+                var sceneMsg = MessagePackSerializer.Deserialize<SetVisualizerScenePayload>(
+                    msg.Payload, MessagePackOptions.Default);
+                // Populate static topology config BEFORE scene reload. The new
+                // scene's _Ready runs after ChangeSceneToFile, in the same main-
+                // thread frame or the next.
+                NeuralSceneConfig.NodesPerHemisphere = sceneMsg.NeuralNodesPerHemisphere;
+                NeuralSceneConfig.EdgesPerNode = sceneMsg.NeuralEdgesPerNode;
+                NeuralSceneConfig.CCDensity = sceneMsg.NeuralCCDensity;
+                var path = sceneMsg.Scene switch
+                {
+                    "2d" => "res://node_2d.tscn",
+                    "neural" => "res://neural.tscn",
+                    _ => "res://spike.tscn",
+                };
+                // We can't touch SceneTree here (background thread). Set the
+                // pending path; each scene's _Process will pick it up on main thread.
+                PendingScenePath = path;
+                break;
+            case "":
+                // Heartbeat from App (N.9-fix2). Ignore silently — not an
+                // unknown kind, not an error.
                 break;
             default:
                 GD.Print($"[IPC] Unknown control kind: {msg.Kind}");

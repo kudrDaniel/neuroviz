@@ -35,6 +35,7 @@ public sealed class IpcServer : IDisposable
     private Process? _godotProcess;
     public Process? GodotProcess => _godotProcess;
     private long _seq = 0;
+    private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
     private volatile bool _eventStreamConnected;
 
     /// <summary>
@@ -148,6 +149,16 @@ public sealed class IpcServer : IDisposable
         _controlQueue.Writer.TryWrite(msg);
     }
 
+    public void SendVisualizerScene(SetVisualizerScenePayload payload)
+    {
+        var msg = new ControlMessage
+        {
+            Kind = ControlKinds.SetVisualizerScene,
+            Payload = MessagePackSerializer.Serialize(payload, MessagePackOptions.Default),
+        };
+        _controlQueue.Writer.TryWrite(msg);
+    }
+
     private async Task AcceptControlPipeAsync()
     {
         while (!_cts.IsCancellationRequested)
@@ -159,7 +170,6 @@ public sealed class IpcServer : IDisposable
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await pipe.WaitForConnectionAsync(_cts.Token);
 
-                // Handshake: read Hello, send HelloAck.
                 var helloBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
                 if (helloBytes == null) continue;
                 var hello = MessagePackSerializer.Deserialize<ControlMessage>(
@@ -176,8 +186,8 @@ public sealed class IpcServer : IDisposable
                 await PipeProtocol.WriteFrameAsync(
                     pipe, MessagePackSerializer.Serialize(ack, MessagePackOptions.Default), _cts.Token);
 
-                // P2-B: keep pipe alive, drain control queue to it. Godot
-                // reads these on its long-lived Control pipe loop.
+                var lastWriteTime = _sw.Elapsed.TotalSeconds;
+
                 try
                 {
                     while (pipe.IsConnected && !_cts.IsCancellationRequested)
@@ -188,16 +198,29 @@ public sealed class IpcServer : IDisposable
                                 pipe,
                                 MessagePackSerializer.Serialize(msg, MessagePackOptions.Default),
                                 _cts.Token);
+                            lastWriteTime = _sw.Elapsed.TotalSeconds;
                         }
                         else
                         {
+                            // N.9-fix2: heartbeat (empty Kind = ignored on
+                            // the client — see IpcClient.HandleControlMessage
+                            // which will add a case for empty Kind).
+                            var elapsed = _sw.Elapsed.TotalSeconds;
+                            if (elapsed - lastWriteTime > 0.5)
+                            {
+                                var heartbeat = MessagePackSerializer.Serialize(
+                                    new ControlMessage { Kind = "" },
+                                    MessagePackOptions.Default);
+                                await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
+                                lastWriteTime = elapsed;
+                            }
                             await Task.Delay(50, _cts.Token);
                         }
                     }
                 }
-                catch { /* client closed pipe — loop re-accepts */ }
+                catch { /* client disconnected — retry */ }
             }
-            catch { /* accept/handshake failed — loop retries */ }
+            catch { /* accept/handshake failed — retry */ }
         }
     }
 
@@ -212,9 +235,10 @@ public sealed class IpcServer : IDisposable
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await pipe.WaitForConnectionAsync(_cts.Token);
 
-                // Сбрасываем всё, что накопилось до подключения (устаревшее).
                 while (_outgoingFrames.Reader.TryRead(out _)) { }
                 _eventStreamConnected = true;
+
+                var lastWriteTime = _sw.Elapsed.TotalSeconds;
 
                 try
                 {
@@ -224,10 +248,29 @@ public sealed class IpcServer : IDisposable
                         {
                             var bytes = MessagePackSerializer.Serialize(frame, MessagePackOptions.Default);
                             await PipeProtocol.WriteFrameAsync(pipe, bytes, _cts.Token);
+                            lastWriteTime = _sw.Elapsed.TotalSeconds;
                         }
                         else
                         {
-                            await Task.Delay(16, _cts.Token); // ~60 fps
+                            // N.9-fix2: heartbeat. Godot's client may have
+                            // been destroyed via ChangeSceneToFile without
+                            // the App noticing (IsConnected on Windows can
+                            // stay true until a write throws). Without a
+                            // heartbeat, this single-instance slot stays
+                            // occupied, and the new client's ConnectAsync
+                            // times out. Empty FrameSeq=-1 is ignored on
+                            // the client (GetLatestFrame filters by
+                            // FrameSeq > _lastSeq, and -1 is never > -1).
+                            var elapsed = _sw.Elapsed.TotalSeconds;
+                            if (elapsed - lastWriteTime > 0.5)
+                            {
+                                var heartbeat = MessagePackSerializer.Serialize(
+                                    new EventStreamFrame { FrameSeq = -1 },
+                                    MessagePackOptions.Default);
+                                await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
+                                lastWriteTime = elapsed;
+                            }
+                            await Task.Delay(16, _cts.Token);
                         }
                     }
                 }
@@ -236,7 +279,7 @@ public sealed class IpcServer : IDisposable
                     _eventStreamConnected = false;
                 }
             }
-            catch { /* ignore */ }
+            catch { /* client disconnected mid-write or accept — retry */ }
         }
     }
 

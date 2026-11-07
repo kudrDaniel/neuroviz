@@ -52,6 +52,8 @@ public sealed class StreamBoundaryDetector
     private double _lastBoundarySeconds = double.NegativeInfinity;
     private double _openStartedSeconds = double.NegativeInfinity;
 
+    private float _lastStrongMagnitude;
+
     public StreamBoundaryDetector(
         double openWindowSeconds = 4.0,
         int openRequiredCount = 2,
@@ -81,6 +83,7 @@ public sealed class StreamBoundaryDetector
         _isOpen = false;
         _lastStrongNoveltySeconds = double.NegativeInfinity;
         _lastBoundarySeconds = double.NegativeInfinity;
+        _lastStrongMagnitude = 0f;
         _openStartedSeconds = double.NegativeInfinity;
     }
 
@@ -121,6 +124,8 @@ public sealed class StreamBoundaryDetector
 
         _lastStrongNoveltySeconds = ev.TimestampSeconds;
 
+        _lastStrongMagnitude = ev.Params.GetValueOrDefault("error_magnitude");
+
         // Already open: strong novelty just refreshed the timeout above.
         if (_isOpen) yield break;
 
@@ -146,35 +151,43 @@ public sealed class StreamBoundaryDetector
         yield return BoundaryEvent(ev.TimestampSeconds, open: true);
     }
 
-    private static AudioEvent BoundaryEvent(double t, bool open) => new()
+    private AudioEvent BoundaryEvent(double t, bool open) => new()
     {
         Type = EventTypes.StreamBoundary,
         TimestampSeconds = t,
-        // Deterministic when fired: the state machine already filtered
-        // by strength and window, so confidence is 1.0 — rules that gate
-        // on confidence >= N would otherwise need special-casing for
-        // boundary. Filter on params.open instead (as basic.json does).
         Confidence = 1f,
         SourceLayer = 2,
         Params = new Dictionary<string, float>
         {
             ["open"] = open ? 1f : 0f,
+            // N.7-prep: strength carries the magnitude of the last strong
+            // novelty that contributed to this boundary. Downstream scenes
+            // use it to scale the response — the neural visualizer uses it
+            // to decide how many nodes move on section change (Q2).
+            ["strength"] = open ? _lastStrongMagnitude : 0f,
         },
     };
 
     public void OnSeek(double oldPos, double newPos)
     {
-        // Not open: nothing to preserve.
-        if (!_isOpen) return;
-
-        // Adjust all timestamps by the seek delta, so close-timer still
-        // measures wall-clock elapsed since last strong novelty in track time.
-        var delta = newPos - oldPos;
-        _lastStrongNoveltySeconds += delta;
-        _lastBoundarySeconds += delta;
-        _openStartedSeconds += delta;
-
-        // Transient per-position queue: stale, clear it.
+        // Seek is a jump, not a temporal pause-rewind. Shifting the cached
+        // timestamps by (newPos - oldPos) worked for close-timer semantics
+        // ("time elapsed since last strong novelty in track time"), but it
+        // left _isOpen in the wrong state: seeking backward while open
+        // meant the detector thought it was still open, so the next
+        // strong novelty at the same boundary was silently ignored
+        // ("_isOpen → yield break") and open=1 never re-emitted. The
+        // neural visualizer's restructure, driven by open=1 events, then
+        // never fired on replay even though the network had been restored
+        // to pre-boundary state by the snapshot.
+        //
+        // Reset everything. The detector behaves as if the track just
+        // started at the new position: the next two strong novelties in
+        // the window will open a fresh stream, as on the first pass.
         _recentStrongTimestamps.Clear();
+        _isOpen = false;
+        _lastStrongNoveltySeconds = double.NegativeInfinity;
+        _lastBoundarySeconds = double.NegativeInfinity;
+        _openStartedSeconds = double.NegativeInfinity;
     }
 }

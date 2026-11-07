@@ -555,3 +555,195 @@ harmonicity→color). Может быть удалён после подтвер
 
 Во время re-analyze транспорт (Play/Pause/Seek/Save) заблокирован —
 кнопки неактивны или no-op.
+
+---
+
+## Уровень 4. Neural visualizer (`MainNodeNeural`)
+
+Вторая 3D-сцена, независимая от spike. Двухполушарная нейросинаптическая
+сеть: сфера-геоиды с узлами, рёбра-аксоны, CC-магистрали, эволюционная
+перестройка на `stream_boundary`. Полный план — `docs/PLAN_NEURAL.md`.
+
+Выбор сцены — Settings → «Visualizer scene» (`2d` / `spike` / `neural`).
+Значение применяется на Launch и live при смене ComboBox
+(`SetVisualizerScene` → Godot `ChangeSceneToFile`).
+
+### Топология (только при Launch/SceneChange)
+
+Топология генерируется в `_Ready` и **не меняется live** — изменение
+требует пересоздания сцены. Параметры:
+
+| Параметр | Default | Диапазон | Смысл |
+|---|---|---|---|
+| `NeuralNodesPerHemisphere` | 800 | 200–1500 | Узлов на каждое полушарие (1600 всего при 800) |
+| `NeuralEdgesPerNode` | 4 | 2–6 | K для K-nearest intra-связей |
+| `NeuralCCDensity` | 0.3 | 0.1–1.0 | Плотность corpus callosum (множитель per-layer: High=1.0, Mid=0.6, Low=0.2) |
+
+Слои по X: Low [0.10, 0.56], Mid [0.56, 0.80], High [0.80, 0.96] для
+левого; правый — зеркально. CC-gap [0.96, 1.04]. Узлы распределены
+30/40/30 по слоям, эллипсоид semi-axes (0.43, 0.5, 0.5), центры
+(0.53, 0, 0) и (1.47, 0, 0).
+
+### Камера (live)
+
+| Параметр | Default | Диапазон | Смысл |
+|---|---|---|---|
+| `NeuralCameraOrbitSpeed` | 0.05 | 0.01–0.2 | Орбита rad/s (полный оборот = 2π/speed ≈ 126 s при 0.05) |
+| `NeuralCameraYAmplitude` | 0.4 | 0.0–1.0 | Y-sway амплитуда (независимая частота 0.03 rad/s → Лиссажу) |
+
+Камера привязана к `_visualTime` (delta, 60 Hz), не к audio clock —
+движется на паузе, не прыгает на seek. FOV 75 → 90 на novelty
+(zoom-out × shiver с 8/s сглаживанием).
+
+### Палитра активации
+
+Базовая палитра (state 0):
+
+| Слой | Base color |
+|---|---|
+| Low | (0.92, 0.88, 0.78) — светло-бежевый |
+| Mid | (0.70, 0.55, 0.38) — тёплый tan |
+| High | (0.48, 0.34, 0.22) — тёмный tan |
+
+Активация (`act` ∈ [0, 1]): **base → red → orange → yellow** (три
+сегмента, breakpoints 0.3 / 0.7). Emission = `albedo * (0.15 + act² × 2.0)`,
+квадратичный falloff (низкая активация subtle, пик — pop).
+
+`pitch_height` (event) → base hue сдвиг к lavender (0.65, 0.45, 0.85),
+множитель `pitch * 0.35`.
+
+### Continuous → несколько каналов (ядро «системы»)
+
+Один параметр влияет на **≥2 элемента**, это создаёт ощущение
+взаимодействия систем:
+
+| Параметр | Узлы | Рёбра | Частицы | Камера |
+|---|---|---|---|---|
+| `band_energy.low/mid/high` | per-layer baseline emissive (×0.4) | CC bundle brightness `0.5 + band × 1.5` | — | — |
+| `spectral_flux` | Random flashes (intensity 0.25, cooldown 150 ms) | — | — | — |
+| `harmonicity` | — | Edge `coherence = 0.4 + harm × 0.6` | — | — |
+| `vad_state` | Левый гемисфер +0.15 × vad, правый +0.05 × vad | — | — | — |
+| `speech_music_ratio` | Scale `1.0 - smr × 0.15` | — | — | — |
+| `pulse` (event) | Cascade seed | — | Neurotransmitter emission | — |
+| `release` (event) | **Wave сжатия** от центра | Same wave | — | — |
+| `shiver` (event) | Global brightness ×1.8 | — | — | FOV +15 |
+| `cortex_flash` (event) | Global brightness +1.5 | — | — | — |
+| `pitch_height` (event) | Base hue → lavender | — | — | — |
+| `pan_x` (event) | Hemisphere bias при seed | — | — | — |
+| `stream_boundary` (event) | **Эволюционная перестройка** | Rebuild edges + CC | — | — |
+
+### Каскад активации (pulse)
+
+- **Seed:** 1–3 узла в Low-слое, гемисфер по `pan_x` (leftProb = `(1-pan)/2`).
+- **Hop:** 120 ms между узлами, `intensity × 0.6` за хоп, отсечение при
+  `< 0.05` (≈5 хопов, ~600 ms).
+- **Cooldown:** 50 ms между seed'ами.
+- **Edge detection:** по `p.SetAtSeconds` (не по порогу значения — быстрые
+  удары с 150 ms decay не падают ниже 0.5 между битами).
+- **Adjacency:** только intra-edges, CC не участвуют (гемисфера
+  сохраняет pan-семантику).
+
+### Release wave
+
+Волна сжатия от `StructureCenter` (1, 0, 0):
+
+- `arrival_i = waveVisualStart + distNorm_i × 0.6 + phase_i × nonuniformity`.
+- `distNorm = dist / _maxNodeDist` (та же база, что у edge shader).
+- `phase_i = sin(pos.x × 17 + pos.y × 23 + pos.z × 31)` — детерминированный
+  hash, идентичен в C# и GLSL, чтобы узлы и концы их рёбер двигались
+  синхронно.
+- `nonuniformity = (1 - harmonicity) × 0.3` — чистый тон = ровный фронт,
+  шум = хаотичный.
+- `pulse = sin(el / 0.4 × π)` если `el ∈ [0, 0.4]`, иначе 0.
+- `factor = 1 - amplitude × pulse`, `amplitude = release.Value × 0.15`.
+
+**Клок:** `_visualTime` (60 Hz delta), не audio clock. См. N.10-fix —
+audio clock из MMF обновляется на BASS DSP колбэке (~25–50 Hz), что
+давало stutter на 60 FPS рендере. Audio clock остаётся для триггеров
+(cooldown, SetAtSeconds).
+
+### Restructure на stream_boundary
+
+Эволюционная перестройка: **часть узлов двигается внутри своего слоя**,
+старые связи рвутся, новые формируются по K-nearest. Это не переключение
+конфигураций, а настоящая эволюция топологии.
+
+- **Триггер:** `stream_boundary open=1` с cooldown 2 s.
+- **Сколько двигается:** `fraction = clamp(0.15 + strength × 0.02, 0.15, 0.45)`.
+  Strength — из `params.strength` (NoveltyDetector.error_magnitude последнего
+  strong novelty, передаётся из `StreamBoundaryDetector`).
+- **Куда двигаются:** в X-диапазоне своего слоя, YZ в окружности с радиусом
+  `sqrt(R² - d²) × 1.15` (R = 0.5, d = расстояние по X до центра
+  полушария). **Отражение**, не clamp — узлы не кучкуются у границ.
+- **Переход:** 2.5 s, smoothstep ease-in-out.
+- **Рёбра:** во время движения растягиваются (mesh rebuild per-frame).
+  По завершении: полное удаление всех рёбер moved-узлов, K-nearest
+  восстановление (тот же слой + гемисфера).
+- **Snapshots:** каждый уникальный boundary сохраняет snapshot
+  (positions + edges + targets, ~20 KB). Seek восстанавливает из
+  ближайшего snapshot ≤ позиции. Детерминированный RNG (seed от
+  event-timestamp) — replay даёт идентичный результат. При dрейфе
+  timestamp'а (NoveltyDetector warm-up после seek) ищется snapshot в
+  пределах 1.5 s и применяются его targets.
+
+### Частицы
+
+**Neurotransmitters** (`MultiMesh`, 200 slots, ring buffer):
+- 1–2 маленьких icosphere на hop (radius 0.025 local × 2 scene scale).
+- Полёт по прямой от `_nodeBasePos[from]` к `[to]` за 120 ms (синхронно
+  с hop-задержкой).
+- Scale profile `sin(πt)` — fade in/out.
+- Фиолетовый (0.75, 0.35, 1.0) — контраст с беж/tan базой.
+- Тени Off (200 мелких сфер на shadow map — расточительно).
+
+**Ambient** (`GpuParticles3D`, 300, halo вокруг структуры):
+- EmissionSphereRadius 3.0 (world), Position (1.0, 0, 0) — прямой ребёнок
+  `MainNodeNeural`, не `SceneRoot` (иначе halo сместится влево).
+- Density от `band_energy.mid` (`clamp(0.1 + mid × 0.9, 0.05, 1.0)`).
+- Цвет тёплый жёлтый, fade gradient. Тени Off.
+
+### Glow (bloom)
+
+`GlowEnabled = true` в Environment. Порог HDR 1.0 — базовые узлы не
+bloom'ят (ниже порога), активные/вспыхивающие — дают ореол.
+
+| Параметр | Default | Тюнинг |
+|---|---|---|
+| `GlowIntensity` | 0.8 | ↑ если ореол слабый |
+| `GlowStrength` | 1.0 | ↑ для более яркой «засветки» |
+| `GlowBloom` | 0.1 | 0.0 убирает мягкое «облако», оставляет чистый blur |
+| `GlowHdrThreshold` | 1.0 | ↑ (1.5) — только очень яркие пиксели bloom'ят; ↓ (0.8) — базовые узлы тоже |
+
+**Volumetric fog — отложено.** Требует `forward_plus` рендерера
+(сейчас `gl_compatibility`). Дал бы настоящий 3D-туман с god-rays от
+эмиссивных узлов и CC-магистралей. См. `docs/PLAN_NEURAL.md §11
+«Возможные follow-ups»`. Preview работает через `FramePostDraw` — не
+привязан к рендереру, так что переключение на forward_plus безопасно,
+если понадобится.
+
+### VAD-специфика
+
+`vad_state` = 0/1 (hysteresis enter 0.55 / exit 0.40). Источник — ZCR +
+spectral flatness + voice-band (300–3000 Hz) + centroid (300–2500 Hz),
+soft-min из четырёх признаков. `speech_music_ratio` — EMA с τ ≈ 2 s.
+
+---
+
+## Возможные follow-ups (не в текущей версии)
+
+- **Volumetric fog** (`forward_plus`): туман в объёме, god-rays от
+  эмиссивных узлов и CC-bundles. Мощный визуальный апгрейд для neural,
+  требует смены рендерера + проверки FPS на GTX 1060-классе.
+  См. `PLAN_NEURAL.md §11`.
+- **Кривые рёбра** (вместо `PRIMITIVE_LINES`): bezier-subdivision для
+  intra-edges, чтобы они не были прямыми. Дороже по CPU, но читается
+  как «дендриты».
+- **KI-4** (drift timestamp'ов после seek-back + play): затрагивает не
+  только neural (pulse cascade seeds, onset/offset/novelty events в
+  Debug-таблице тоже дрейфуют). Закрывается offline-анализом при Load
+  project (Phase 2.5).
+- **B2** (persistence снапшотов в `.nvproj`): требует schema v3 → v4,
+  отложено. B1 (in-memory) достаточно для работы в сессии.
+- **Per-track neural params**: сейчас все neural-настройки per-user
+  (`settings.json`). Per-project (в `.nvproj`) — только если появится
+  реальный workflow «у разных треков разный визуал».

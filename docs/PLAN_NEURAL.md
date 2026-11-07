@@ -1,9 +1,48 @@
 # Neural-визуализатор — план
 
-**Статус:** в работе.
-**Ветка:** `feature/neural-visualizer` (от `main` после коммита
-`docs: mark Phase 2 achieved`).
+**Статус: achieved.** Все подэтапы N.1–N.10 закрыты. Все Q1–Q5 и
+N-Q1..N-Q5 решены или отложены в Phase 2.5. Neural-сцена доступна через
+Settings → Visualizer scene; функционально завершена.
+
+**Ветка:** `feature/neural-visualizer` (влита в main).
 **Образец:** `PLAN_PHASE_2.md`.
+**Коммитов:** ~20 (N.1–N.10 + fixes).
+
+---
+
+## 0. Итоговая карта
+
+| Подэтап | Статус | Комментарий |
+|---|---|---|
+| N.1 Топология | ✅ | Два геоида, зеркальные слои, K-nearest + cross-layer guarantee |
+| N.2 Рендер | ✅ | `MultiMeshInstance3D` (узлы) + `ArrayMesh` (intra + CC) |
+| N.2-fix | ✅ | Ширина 2×1, тёплая база, красные синапсы |
+| N.2-fix2 | ✅ | Масштаб 2× без отдаления камеры |
+| N.3 Каскад | ✅ | Hop-cascade, 120 ms/hop, seed по `pan_x` |
+| N.4 Палитра + continuous | ✅ | Red→orange→yellow, emissive, per-layer baseline |
+| N.4-fix | ✅ | Release wave от центра |
+| N.4-fix2 | ✅ | Reset при seek |
+| N.4-fix3/4/5 | ✅ | CC wave, NaN guards, wavefront от topology |
+| N.5 Частицы | ✅ | Neurotransmitters + ambient |
+| N.5-fix | ✅ | Ambient по центру, фиолетовые частицы |
+| N.6 CC bundles + vad/speech | ✅ | Per-layer bundle energy, hemisphere bias, speech-scale |
+| N.7 Restructure | ✅ | Эволюционная перестройка на `stream_boundary` |
+| N.7-fix | ✅ | Отражение от границ слоя, no clustering |
+| N.7-fix2 | ✅ | Cap intra edges (FPS stabilization) |
+| N.7-fix3 | ✅ | Snapshot replay (B1) |
+| N.7-fix4 | ✅ | Reset restructure cooldown on seek |
+| N.7-fix5 | ✅ | `StreamBoundaryDetector.OnSeek` = full reset |
+| N.7-fix6 | ✅ | Remove obsolete test, log Snaps count |
+| N.7-fix7 | ✅ | Replay stored targets (decouple from drift) |
+| N.8 Idle camera | ✅ | Orbit + novelty zoom-out |
+| N.9 Settings UI | ✅ | Scene selector + neural fields |
+| N.9-fix | ✅ | `VisualConfigReceived` wired to neural |
+| N.9-fix2 | ✅ | Skip redundant reload, heartbeat IPC |
+| N.9-fix3 | ✅ | Preview capture ported to neural |
+| N.10-fix | ✅ | Visual clock for wave (no stutter) |
+| N.10-fix2 | ✅ | Wave distance sync nodes/edges |
+| N.10-fix3 | ✅ | Bloom (glow) enabled |
+| N.10 Docs | ✅ | Эта финализация |
 
 ---
 
@@ -64,6 +103,14 @@ LowL MidL HighL│HighR MidR LowR
 **800 узлов/геоид = 1600 total** (по умолчанию). 4 связи на узел →
 ~3200 intra-edges + ~400 CC-edges ≈ 3600 рёбер.
 
+**Масштаб:** N.2-fix2 скейлит всю структуру 2× через `SceneRoot`
+(-1.03 X offset, scale 2.0). В world units: ~1.8 × 1 × 1 →
+~3.6 × 2 × 2 (aspect 1.8:1:1 сохранён). Камера на прежней дистанции
+(2.9), смотрит в тот же центр — эффект «структура крупнее», не
+«отъехали». Узлы крупнее (mesh scale), рёбра тонкие относительно
+узлов (line-width 1px = ограничение `PRIMITIVE_LINES`, если станет
+больно — квады в Phase 3).
+
 ### Рендер
 
 - **Узлы** — `MultiMeshInstance3D`, один icosphere mesh (детализация
@@ -96,36 +143,74 @@ LowL MidL HighL│HighR MidR LowR
 При `pulse` срабатывает только если кулдаун прошёл (default 50 мс —
 иначе частый drum'n'bass перегружает каскад).
 
-### Частицы (Q4 = A + B)
+### Частицы (N.5)
 
-**A. Нейротрансмиттеры на рёбрах:** при активации узла, для каждого
-активного ребра (куда каскад переходит), создаётся 1–2 частицы.
-`MultiMeshInstance3D` с mesh = маленький icosahedron (radius 0.015).
-Полёт от `sourcePos` к `targetPos` за 120 мс (совпадает с hop-
-задержкой). При достижении — вклад в `activation[target]`.
+**Ambient** — прямой ребёнок `MainNodeNeural` (НЕ SceneRoot), world
+position `(1.0, 0, 0)` — центр структуры. Emission radius 3.0 world.
+В SceneRoot halo смещался бы влево на 2 единицы (SceneRoot position
+X=-1.03), поэтому ambient отделён от масштабируемой ветки.
 
-Максимум одновременных: **200** (bounded, DropOldest). Тени включены —
-на пике каскада узлы подсвечены от пролетающих мешей.
+**Neurotransmitters** — `MultiMesh.CustomAabb` **обязателен**.
+`MultiMeshInstance3D` не имеет `VisibilityAabb` (это свойство
+`GpuParticles3D`). Без custom AABB Godot cull'ит весь MultiMesh:
+все instance'ы стартуют в (0,0,0) local с крошечным scale, авто-AABB
+вырожденный, и при первом рендере cull-решение уже принято —
+частицы летают «вне видимости». CustomAabb покрывает области
+local X [-0.5, 2.5], YZ [-1, 1].
 
-**B. Фон:** ambient-рой как в spike (density от `band_energy.mid`),
-но **без теней** (дорого, незаметно), цвет совпадает с базой
-(холодный синий).
+Цвет — фиолетовый (0.75, 0.35, 1.0), комплементарен беж-тан базе.
+Спавнится 2 частицы на hop. CastShadow = Off (200 мелких сфер на
+shadow map — расточительно, тени невидимы).
 
-### Палитра (Q5 = A)
+**Взаимодействие с release wave:** частицы — дети SceneRoot, волна
+смещает сам SceneRoot (в N.4-fix — per-node, но позиции узлов меняются
+внутри SceneRoot). Ambient тоже в SceneRoot → он «плывёт» с волной,
+но neurotransmitters — per-frame position из `_nodeBasePos`, который
+волной не затронут. Значит волна не тянет за собой частицы в полёте.
+Приемлемо: удар release редко совпадает с каскадом. Open question
+для N.6, если понадобится синхронизация.
 
-**Cold+Tеplo:**
+### Палитра (N.2-fix, базовая)
 
-| Состояние | Цвет |
-|---|---|
-| Узел покоя | `(0.15, 0.20, 0.35)` тёмно-синий |
-| Узел слабая активация | `(0.4, 0.5, 0.8)` светло-синий |
-| Узел пик активации | `(1.0, 0.7, 0.2)` жёлто-оранжевый |
-| Узел пик + flash | белый |
-| Ребро покоя | `(0.1, 0.15, 0.25)` тускло-синий |
-| Ребро активное | `(1.0, 0.7, 0.2)` warm |
-| `pitch_height` | Hue shift: low → синий, high → фиолетовый → пурпурный |
-| `shiver` | Глобальная вспышка + zoom-out камеры |
-| `cortex_flash` | Быстрый белый пик на всех активных |
+| Элемент | Low | Mid | High |
+|---|---|---|---|
+| **Узел** | (0.92, 0.88, 0.78) светло-бежевый | (0.70, 0.55, 0.38) тёплый tan | (0.48, 0.34, 0.22) тёмный tan |
+| **Intra edge** | (0.72, 0.38, 0.38, a=0.50) | (0.78, 0.35, 0.35, a=0.55) | (0.82, 0.32, 0.32, a=0.60) |
+| **CC edge** | (0.80, 0.32, 0.32, a=0.78) | (0.85, 0.28, 0.28, a=0.82) | (0.90, 0.24, 0.24, a=0.85) |
+
+**Фон:** (0.02, 0.02, 0.05) тёмно-синий. **Ambient:** (0.10, 0.07, 0.05) тёплый тусклый.
+
+**Активация (N.4, решено):** base → red (0.3) → orange (0.7) → yellow (1.0),
+плюс emissive: `glow = act²`, `EMISSION = albedo * (0.15 + glow*2.0)`.
+Quadratic falloff: subtle при act=0.3 (9% glow), поп при act=1.0.
+
+**Отклонения от исходного плана §4:**
+- `band_energy.low/mid/high` → **emissive boost**, не scale.
+  Scale делал бы «растущие узлы» (выглядит как баг); emissive
+  даёт «сеть освещается» — тот же UX, чище.
+- `harmonicity` → **brightness modulation** рёбер, не vertex jitter.
+  Jitter требует per-frame vertex rebuild (дорого) или shader с
+  UV-offsets (сложно). Brightness даёт 80% эффекта за 5% кода.
+  Настоящий jitter — open follow-up (N.4-fix или Phase 3).
+- `speech_music_ratio` — отложено в N.6 (вместе с vad_state и CC).
+- **release**: N.4 делал `SceneRoot.Scale * (1 - release * 0.1)` —
+  мгновенное сжатие всей структуры. N.4-fix заменяет на per-node
+  волну: узлы смещаются к центру по мере прохождения фронта, а не
+  все сразу. `harmonicity` управляет неоднородностью фронта
+  (чистый тон → ровный ripple, шум → хаотичная рябь). Узлы — CPU
+  `SetInstanceTransform`, рёбра — shader с dist-based arrival.
+  Радиусы сжатия те же (~15%), но распределены по времени и
+  пространству.
+
+**VAD / speech** — N.6.
+
+**CC bundles (N.6):** каждый bundle (Low/Mid/High) — отдельный
+`MeshInstance3D` со своим `ShaderMaterial` (один shader). Brightness =
+`0.5 + band_energy[layer] * 1.5` ∈ [0.5, 2.0]. CC edges не получают
+`coherence` от harmonicity (`coherence = 1.0` зафиксировано) —
+это «структурные магистрали», не зависящие от тональности. При
+`stream_boundary` (N.7) топология bundle'ов изменится, но материал-канал
+останется тем же.
 
 ### Interaction table (ядро «системы»)
 
@@ -136,10 +221,10 @@ LowL MidL HighL│HighR MidR LowR
 | `band_energy.high` | cont | High-слой: scale + emissive | CC-High bundle подсветка | — | — |
 | `spectral_flux` | cont | Random flash поверх каскада | — | Burst-emission | — |
 | `harmonicity` | cont | — | Coherence: 1 → прямые, 0 → дрожат (noise offset) | — | — |
-| `vad_state` | cont | Левый/правый гемисфер: sec. factor × activation | — | — | — |
-| `speech_music_ratio` | cont | Профиль: речь = плотность в Low, музыка = равномерно | — | — | — |
+| `vad_state` | cont | Левый гемисфер: +0.15×vad baseline activation; правый +0.05×vad | — | — | — |
+| `speech_music_ratio` | cont | Масштаб узлов: 1.0 - smr*0.15 (speech = мельче/плотнее) | — | — | — |
 | `pulse` | event | Seed каскада (X по pan_x) | Волна по hop | Neurotransmitters | — |
-| `release` | event | Сжатие узлов (scale × 0.85 на 400 мс) | Приглушение яркости | — | — |
+| `release` | event | **Волна сжатия** от центра структуры; каждый узел проседает к центру с sin-пиком за 0.4с; неравномерность фронта (опережение/запоздание) управляется `(1 - harmonicity) * 0.3` | — | — | — |
 | `shiver` | event | Яркая вспышка | — | — | Zoom-out ×1.3 |
 | `cortex_flash` | event | Быстрый пик белого | — | — | — |
 | `pitch_height` | event | Hue shift синий→фиолетовый→красный | Hue shift | — | — |
@@ -351,6 +436,23 @@ FPS ≥ 60 при пике (200 частиц); тени частиц на узл
 | **N-Q4** | Частицы A: сколько одновременно? Тени для всех или только крупных? | N.5 |
 | **N-Q5** | stream_boundary open → сколько CC-конфигураций: 2 / 3 / бесконечно? | N.7 |
 
+**B1 — in-memory snapshots (N.7-fix3):** каждый stream_boundary
+сохраняет snapshot (позиции 1600 узлов + intra edges list, ~20 KB).
+Детерминированный RNG от event-timestamp → повторное прохождение
+даёт идентичный результат. Seek восстанавливает из ближайшего
+snapshot'а ≤ позиции. `_initialSnapshot` — состояние до первой
+перестройки.
+
+**B2 — persistence в .nvproj (deferred Phase 2.5):** snapshot'ы
+переживают сессию. Требует schema bump v3 → v4 (`EventTimeline
+.RestructureHistory: List<RestructureSnapshot>`). Не реализовано.
+**Ограничение B1:** после Load Project / перезапуска App история
+пуста, повторное проигрывание применяет перестройки заново
+(детерминированно — результат тот же, но seek между границами
+без предварительного проигрывания не восстановит их состояния
+корректно: `_initialSnapshot` = пост-генерация, а не состояние
+трека на момент сохранения).
+
 ## 7. Kill switches
 
 Два обязательных:
@@ -404,3 +506,89 @@ FPS ≥ 60 при пике (200 частиц); тени частиц на узл
 - Динамическая топология на каждом кадре (только на stream_boundary).
 - Multi-track, export, motif, cross-platform, node-graph.
 - Ручное редактирование топологии (только генератор).
+
+---
+
+## 11. Возможные follow-ups
+
+Не в текущей версии. Каждый — отдельная итерация, если появится боль
+или желание углубить.
+
+### Volumetric fog (`forward_plus`)
+
+**Что даёт.** Настоящий 3D-туман, в котором эмиссивные узлы и
+CC-магистрали светятся в объёме. Создаёт god-rays, объёмную глубину,
+«сеть висит в светящейся среде». Мощный визуальный апгрейд для
+neural-сцены.
+
+**Что нужно.** Переключение `project.godot` с `gl_compatibility` на
+`forward_plus` (Vulkan/D3D12). Настройки `Environment`:
+`volumetric_fog_enabled`, `volumetric_fog_density`,
+`volumetric_fog_emission`, `volumetric_fog_albedo`,
+`volumetric_fog_length`. Плюс `volumetric_fog_gi_inject` если
+хочется GI от тумана.
+
+**Риски.**
+- Производительность: forward_plus тяжелее, особенно на мобильных GPU
+  и интегрированной графике. На GTX 1060-классе — должно летать, но
+  проверить.
+- Preview: `GetImage()` через `FramePostDraw` работает на forward_plus
+  (мы это чинили специально), значит preview не сломается.
+- Spike-сцена: тоже переедет на forward_plus (общий `project.godot`),
+  вероятно без проблем, но стоит проверить FPS.
+
+**Оценка.** ~2–4 часа (три строки в `project.godot` + настройки fog +
+тюнинг визуала).
+
+**Почему отложено.** Glow/bloom уже даёт 80% «ощущения излучения» за
+5 минут работы (N.10-fix3). Volumetric fog — «вишенка на торте», но
+не блокирует базовую концепцию neural-сцены.
+
+### Кривые рёбра (вместо `PRIMITIVE_LINES`)
+
+**Что даёт.** Intra-edges (сейчас прямые линии) становятся
+bezier-кривыми, визуально «дендриты». Особенно красиво на длинных
+рёбрах через CC-пространство.
+
+**Что нужно.** Заменить `MakeLineMesh` в `BuildIntraEdgeMesh` на
+multi-segment ArrayMesh (как CC уже делает). Segments per edge — 3–4.
+
+**Риски.** CPU: rebuild mesh per-frame во время restructure растёт
+×3–4 (сейчас 3200 edges × 2 vertex = 6400, станет 3200 × 4 segment × 2
+vertex = 25600). На GTX 1060 — незаметно, но замерзание FPS возможно
+на слабых GPU.
+
+**Оценка.** ~1 день (bezier math + rebuild logic).
+
+### KI-4 (timestamp drift после seek-back)
+
+**Что даёт.** Устраняет дрейф timestamps у novelty/pulse событий после
+seek-back + play. Общий KI (не только neural) — Debug-таблица перестаёт
+показывать дубликаты `stream_boundary`, cascade seeds дрейфуют
+идентично оригиналу.
+
+**Что нужно.** Offline-анализ при Load Project (Phase 2.5, KI-3).
+При Load — прогнать весь трек за один проход, кэшировать Events с
+точными timestamp'ами. Replay использует кэш.
+
+**Оценка.** ~1 неделя (offline pipeline).
+
+**Почему отложено.** Реальный workflow — линейное прослушивание без
+перемотки. KI-4 — edge case сравнения состояний. Neural restructure
+уже покрыт (N.7-fix7 replay stored targets), cascade seeds — minor.
+Offline pipeline — большая работа, не блокирует использование.
+
+### B2 (persistence снапшотов в `.nvproj`)
+
+**Что даёт.** Snapshot'ы перестройки переживают сессию. Load Project
+восстанавливает точное состояние сети на любой позиции трека без
+предварительного проигрывания.
+
+**Что нужно.** Schema bump `EventTimeline.SchemaVersion` v3 → v4,
+сериализуемый `RestructureSnapshot` в MessagePack, миграция.
+
+**Оценка.** ~1 день.
+
+**Почему отложено.** B1 (in-memory) покрывает 90% сценариев. B2 нужен
+только для «закрыл App, через неделю открыл» + seek между boundary
+без предварительного проигрывания. Редкий кейс.

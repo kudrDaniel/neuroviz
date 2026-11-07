@@ -130,6 +130,27 @@ public partial class MainNode3D : Node3D
     {
         _ipc.DrainMainThreadActions();
 
+        if (_ipc.PendingScenePath is { } pendingPath)
+        {
+            _ipc.ClearPendingScene();
+            // N.9-fix2: skip reload if the current scene already matches.
+            // ChangeSceneToFile on the same path fully reloads — the old
+            // scene's IpcClient disposes (pipes close), the new scene's
+            // IpcClient connects immediately, and the App's server may still
+            // hold the previous connection's single-instance slot
+            // (NamedPipeServerStream.IsConnected stays true on Windows until
+            // a write actually fails). Result: new client times out, scene
+            // freezes on "Waiting...". Guard against it here — a redundant
+            // reload is never useful.
+            var current = GetTree().CurrentScene?.SceneFilePath;
+            if (!string.Equals(current, pendingPath, StringComparison.OrdinalIgnoreCase))
+            {
+                GetTree().ChangeSceneToFile(pendingPath);
+                return;
+            }
+            // Same scene — fall through to normal _Process.
+        }
+
         if (!_ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";

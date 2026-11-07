@@ -38,6 +38,20 @@ public sealed class AppSettings
     /// </summary>
     public bool VisualizerAlwaysOnTop { get; set; }
 
+    /// <summary>Which visualizer scene to launch. "2d", "spike", or "neural".</summary>
+    public string VisualizerScene { get; set; } = "spike";
+
+    // Neural-specific topology (applied on scene rebuild — topology is
+    // immutable after Generate(), so these require a scene reload).
+    public int NeuralNodesPerHemisphere { get; set; } = 800;
+    public int NeuralEdgesPerNode { get; set; } = 4;
+    public float NeuralCCDensity { get; set; } = 0.3f;
+
+    // Neural camera (live via SetVisualConfig, same mechanism as spike's
+    // CameraOrbitSpeed / CameraYAmplitude).
+    public float NeuralCameraOrbitSpeed { get; set; } = 0.05f;
+    public float NeuralCameraYAmplitude { get; set; } = 0.4f;
+
     // 3D visualizer tuning (2.4f). Sent to Godot at Launch on the Control
     // pipe; Godot applies them without restart. Bounds are enforced by the
     // Settings UI and re-clamped in ApplyVisualConfig (defence-in-depth
