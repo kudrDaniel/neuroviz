@@ -28,6 +28,7 @@ public partial class MainNodeNeural : Node3D
     private ShaderMaterial _nodeMaterial = null!;
     private ShaderMaterial _edgeMaterial = null!;
     private double _lastFluxFlashTime = double.NegativeInfinity;
+    private double _lastFrameClock = double.NegativeInfinity;
 
     // N.4-fix: release wave state.
     private float[] _nodeDistNorm = null!;
@@ -393,6 +394,19 @@ public partial class MainNodeNeural : Node3D
         }
 
         double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        // Detect seek / track change: a backward jump > 0.3 s or forward
+        // jump > 2.0 s cannot be produced by normal playback (16 ms/frame).
+        // Without this, _pending holds items with timestamps from the old
+        // position — they freeze until the clock catches up, and
+        // _lastPulseSetAt blocks new pulses whose SetAtSeconds are less than
+        // the previous track's last. Both symptoms reported live.
+        if (_lastFrameClock != double.NegativeInfinity)
+        {
+            var jump = nowClock - _lastFrameClock;
+            if (jump < -0.3 || jump > 2.0)
+                ResetTimelineState(nowClock);
+        }
+        _lastFrameClock = nowClock;
         float dt = (float)delta;
 
         // Smoothing (band kb = 83ms, flux kf = 33ms).
@@ -631,6 +645,43 @@ public partial class MainNodeNeural : Node3D
         }
 
         GD.Print($"[Neural] Wave precompute: maxDist={_maxNodeDist:F3}");
+    }
+
+    /// <summary>
+    /// Clears everything that carries absolute audio-clock time: pending
+    /// cascade queue, seed/release/flux edge-detection timestamps, wave
+    /// state, activation array. Invoked on any large clock jump (seek or
+    /// track change). After this the visualizer behaves as if it just
+    /// started at the new position — pending items only from the current
+    /// timeline, pulses always fire their first frame.
+    /// </summary>
+    private void ResetTimelineState(double nowClock)
+    {
+        _pending.Clear();
+        _lastPulseSetAt = double.NegativeInfinity;
+        _lastReleaseSetAt = double.NegativeInfinity;
+        _lastSeedTime = double.NegativeInfinity;
+        _lastFluxFlashTime = double.NegativeInfinity;
+        _waveStartTime = double.NegativeInfinity;
+        _waveAmplitude = 0f;
+
+        // Zero activation — a fading cascade from before the seek would
+        // confuse against the new position's events.
+        for (int i = 0; i < _activation.Length; i++)
+            _activation[i] = 0f;
+
+        // Reset wave: nodes back to base, edge shader amplitude to zero so
+        // the shader stops applying any in-flight pulse.
+        if (_nodeBasePos is not null)
+        {
+            for (int i = 0; i < _nodeBasePos.Length; i++)
+                _nodeMultimesh.SetInstanceTransform(i,
+                    new Transform3D(Basis.Identity, _nodeBasePos[i]));
+        }
+        _edgeMaterial.SetShaderParameter("wave_amplitude", 0f);
+        _wasWaveActive = false;
+
+        GD.Print($"[Neural] Timeline reset at clock={nowClock:F2} (seek or track change)");
     }
 
     public override void _ExitTree() => _ipc.Dispose();
