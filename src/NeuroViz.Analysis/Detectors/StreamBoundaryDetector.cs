@@ -52,6 +52,8 @@ public sealed class StreamBoundaryDetector
     private double _lastBoundarySeconds = double.NegativeInfinity;
     private double _openStartedSeconds = double.NegativeInfinity;
 
+    private float _lastStrongMagnitude;
+
     public StreamBoundaryDetector(
         double openWindowSeconds = 4.0,
         int openRequiredCount = 2,
@@ -81,6 +83,7 @@ public sealed class StreamBoundaryDetector
         _isOpen = false;
         _lastStrongNoveltySeconds = double.NegativeInfinity;
         _lastBoundarySeconds = double.NegativeInfinity;
+        _lastStrongMagnitude = 0f;
         _openStartedSeconds = double.NegativeInfinity;
     }
 
@@ -121,6 +124,8 @@ public sealed class StreamBoundaryDetector
 
         _lastStrongNoveltySeconds = ev.TimestampSeconds;
 
+        _lastStrongMagnitude = ev.Params.GetValueOrDefault("error_magnitude");
+
         // Already open: strong novelty just refreshed the timeout above.
         if (_isOpen) yield break;
 
@@ -146,19 +151,20 @@ public sealed class StreamBoundaryDetector
         yield return BoundaryEvent(ev.TimestampSeconds, open: true);
     }
 
-    private static AudioEvent BoundaryEvent(double t, bool open) => new()
+    private AudioEvent BoundaryEvent(double t, bool open) => new()
     {
         Type = EventTypes.StreamBoundary,
         TimestampSeconds = t,
-        // Deterministic when fired: the state machine already filtered
-        // by strength and window, so confidence is 1.0 — rules that gate
-        // on confidence >= N would otherwise need special-casing for
-        // boundary. Filter on params.open instead (as basic.json does).
         Confidence = 1f,
         SourceLayer = 2,
         Params = new Dictionary<string, float>
         {
             ["open"] = open ? 1f : 0f,
+            // N.7-prep: strength carries the magnitude of the last strong
+            // novelty that contributed to this boundary. Downstream scenes
+            // use it to scale the response — the neural visualizer uses it
+            // to decide how many nodes move on section change (Q2).
+            ["strength"] = open ? _lastStrongMagnitude : 0f,
         },
     };
 

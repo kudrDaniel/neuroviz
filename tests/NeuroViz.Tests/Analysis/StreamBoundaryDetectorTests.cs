@@ -187,6 +187,17 @@ public class StreamBoundaryDetectorTests
         Assert.Equal(0f, closed[0].Params["open"]);
     }
 
+    [Fact]
+    public void OpenEvent_CarriesNoveltyStrength()
+    {
+        var det = new StreamBoundaryDetector();
+        Assert.Empty(det.OnEventEmitted(Novelty(1.0, confidence: 0.9f, magnitude: 6.5f)));
+        var opened = det.OnEventEmitted(Novelty(2.0, confidence: 0.9f, magnitude: 6.5f)).ToList();
+
+        var ev = Assert.Single(opened);
+        Assert.Equal(6.5f, ev.Params["strength"], 3);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────
 
     private static AudioEvent Novelty(double t, float confidence, float magnitude = 0f)
