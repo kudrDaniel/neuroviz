@@ -170,17 +170,24 @@ public sealed class StreamBoundaryDetector
 
     public void OnSeek(double oldPos, double newPos)
     {
-        // Not open: nothing to preserve.
-        if (!_isOpen) return;
-
-        // Adjust all timestamps by the seek delta, so close-timer still
-        // measures wall-clock elapsed since last strong novelty in track time.
-        var delta = newPos - oldPos;
-        _lastStrongNoveltySeconds += delta;
-        _lastBoundarySeconds += delta;
-        _openStartedSeconds += delta;
-
-        // Transient per-position queue: stale, clear it.
+        // Seek is a jump, not a temporal pause-rewind. Shifting the cached
+        // timestamps by (newPos - oldPos) worked for close-timer semantics
+        // ("time elapsed since last strong novelty in track time"), but it
+        // left _isOpen in the wrong state: seeking backward while open
+        // meant the detector thought it was still open, so the next
+        // strong novelty at the same boundary was silently ignored
+        // ("_isOpen → yield break") and open=1 never re-emitted. The
+        // neural visualizer's restructure, driven by open=1 events, then
+        // never fired on replay even though the network had been restored
+        // to pre-boundary state by the snapshot.
+        //
+        // Reset everything. The detector behaves as if the track just
+        // started at the new position: the next two strong novelties in
+        // the window will open a fresh stream, as on the first pass.
         _recentStrongTimestamps.Clear();
+        _isOpen = false;
+        _lastStrongNoveltySeconds = double.NegativeInfinity;
+        _lastBoundarySeconds = double.NegativeInfinity;
+        _openStartedSeconds = double.NegativeInfinity;
     }
 }

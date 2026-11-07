@@ -198,6 +198,25 @@ public class StreamBoundaryDetectorTests
         Assert.Equal(6.5f, ev.Params["strength"], 3);
     }
 
+    [Fact]
+    public void OnSeek_ResetsOpenState_ReEmitsOpenOnReplay()
+    {
+        var det = new StreamBoundaryDetector();
+        det.OnEventEmitted(Novelty(1.0, 0.9f)).ToList();
+        var firstOpen = det.OnEventEmitted(Novelty(2.0, 0.9f)).ToList();
+        Assert.Single(firstOpen);
+        Assert.Equal(1f, firstOpen[0].Params["open"]);
+
+        // Seek backward while open — detector must reset, not stay open.
+        det.OnSeek(10.0, 1.0);
+
+        // Replay through the same novelty pattern → open must fire again.
+        Assert.Empty(det.OnEventEmitted(Novelty(3.0, 0.9f)));
+        var secondOpen = det.OnEventEmitted(Novelty(4.0, 0.9f)).ToList();
+        Assert.Single(secondOpen);
+        Assert.Equal(1f, secondOpen[0].Params["open"]);
+    }
+
     // ── helpers ─────────────────────────────────────────────────────
 
     private static AudioEvent Novelty(double t, float confidence, float magnitude = 0f)
