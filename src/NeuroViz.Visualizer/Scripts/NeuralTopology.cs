@@ -54,32 +54,31 @@ public sealed class NeuralTopology
         int mid = (int)(count * 0.40f);
         int high = count - low - mid;
 
-        // X ranges (left hemisphere, unmirrored). CC gap [0.48, 0.52]
-        // separates the two hemispheres visually; right hemisphere is
-        // the mirror (1 - xLeft).
-        AddLayer(nodes, rng, low, hemisphere, mirrored, layer: 0, xMin: 0.05f, xMax: 0.28f);
-        AddLayer(nodes, rng, mid, hemisphere, mirrored, layer: 1, xMin: 0.28f, xMax: 0.40f);
-        AddLayer(nodes, rng, high, hemisphere, mirrored, layer: 2, xMin: 0.40f, xMax: 0.48f);
+        // X-ranges doubled from N.1 (structure was ~0.86 wide in X; the user
+        // wanted ~2×1 aspect with YZ unchanged at 1×1). CC gap grows 0.04 → 0.08
+        // proportionally; ellipsoid semi-axis a = 0.43 (was 0.215).
+        AddLayer(nodes, rng, low, hemisphere, mirrored, layer: 0, xMin: 0.10f, xMax: 0.56f);
+        AddLayer(nodes, rng, mid, hemisphere, mirrored, layer: 1, xMin: 0.56f, xMax: 0.80f);
+        AddLayer(nodes, rng, high, hemisphere, mirrored, layer: 2, xMin: 0.80f, xMax: 0.96f);
     }
 
     private static void AddLayer(
         List<NeuralNode> nodes, Random rng, int count, int hemisphere, bool mirrored,
         int layer, float xMin, float xMax)
     {
-        // Ellipsoid: center X = 0.265, semi-axes (0.215, 0.5, 0.5).
-        // Ensures the two hemispheres span [0.05, 0.48] and [0.52, 0.95]
-        // with the CC gap [0.48, 0.52].
-        const float cxLeft = 0.265f;
-        const float a = 0.215f;
+        // Ellipsoid: center X = 0.53, semi-axes (0.43, 0.5, 0.5).
+        // Left spans [0.10, 0.96], right [1.04, 1.90] (mirror: 2 - xLeft).
+        // YZ semi-axes unchanged (0.5, 0.5) → total extent 1.8 × 1.0 × 1.0.
+        const float cxLeft = 0.53f;
+        const float a = 0.43f;
         const float b = 0.5f;
         const float c = 0.5f;
-        float cx = mirrored ? (1f - cxLeft) : cxLeft;
+        float cx = mirrored ? (2f - cxLeft) : cxLeft;
 
         for (int i = 0; i < count; i++)
         {
-            // X uniform within the layer's slab.
             float xLeft = xMin + (float)rng.NextDouble() * (xMax - xMin);
-            float x = mirrored ? (1f - xLeft) : xLeft;
+            float x = mirrored ? (2f - xLeft) : xLeft;
 
             // Ellipsoid cross-section at this X: (y/b)² + (z/c)² ≤ 1 - dx².
             float dx = (x - cx) / a;

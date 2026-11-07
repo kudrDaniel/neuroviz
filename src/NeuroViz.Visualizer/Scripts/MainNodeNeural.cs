@@ -42,12 +42,12 @@ public partial class MainNodeNeural : Node3D
     // ── Scene basics ───────────────────────────────────────────────
     private void SetupCameraAndLight()
     {
-        // Camera framing: scene spans X [0.05, 0.95], YZ [-0.5, 0.5]
-        // (bounding diagonal ~1.35). Distance 2.14 → visible width ~3.3
-        // → ~40% screen fill. User can tune in N.8.
-        var camera = new Camera3D { Position = new Vector3(0.5f, 0.5f, 2.1f) };
+        // Camera distance bumped 2.1 → 2.9 to preserve visual fill after the
+        // X-span doubled (1.66 → 2.29 bounding diagonal, ratio 1.38×). Camera
+        // sits on the midline (X=1.0) so both hemispheres are symmetric in frame.
+        var camera = new Camera3D { Position = new Vector3(1.0f, 0.55f, 2.9f) };
         AddChild(camera);
-        camera.LookAt(new Vector3(0.5f, 0, 0));
+        camera.LookAt(new Vector3(1.0f, 0, 0));
 
         AddChild(new DirectionalLight3D
         {
@@ -55,7 +55,7 @@ public partial class MainNodeNeural : Node3D
             LightEnergy = 1.3f,
             ShadowEnabled = true,
             DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel2Splits,
-            DirectionalShadowMaxDistance = 5.0f,
+            DirectionalShadowMaxDistance = 6.0f,   // covers the wider X span
             ShadowBias = 0.03f,
             ShadowNormalBias = 1.0f,
         });
@@ -63,9 +63,12 @@ public partial class MainNodeNeural : Node3D
         var env = new Godot.Environment
         {
             BackgroundMode = Godot.Environment.BGMode.Color,
-            BackgroundColor = new Color(0.02f, 0.02f, 0.05f),
+            BackgroundColor = new Color(0.02f, 0.02f, 0.05f),   // keep dark blue for contrast
             AmbientLightSource = Godot.Environment.AmbientSource.Color,
-            AmbientLightColor = new Color(0.08f, 0.09f, 0.14f),
+            // Warm ambient (was bluish (0.08, 0.09, 0.14)) — beige nodes under
+            // blue ambient read cold; warm ambient (0.10, 0.07, 0.05) lets the
+            // tan palette actually look tan.
+            AmbientLightColor = new Color(0.10f, 0.07f, 0.05f),
             AmbientLightEnergy = 1.0f,
         };
         AddChild(new WorldEnvironment { Environment = env });
@@ -89,7 +92,7 @@ public partial class MainNodeNeural : Node3D
             AlbedoColor = new Color(1, 1, 1),   // multiplied by instance color
             VertexColorUseAsAlbedo = true,       // per-instance tint flows to ALBEDO
             EmissionEnabled = true,
-            Emission = new Color(0.03f, 0.05f, 0.10f),  // dim base glow
+            Emission = new Color(0.06f, 0.04f, 0.02f),   // was (0.03, 0.05, 0.10) bluish
             Roughness = 0.55f,
         };
 
@@ -222,28 +225,34 @@ public partial class MainNodeNeural : Node3D
         AlbedoColor = new Color(1, 1, 1, 1),
     };
 
-    // Per-layer cold palette. N.4 replaces with activation shader.
+    // Warm palette (N.2-fix): nodes light-beige → dark tan from Low to
+    // High; synapses muted red (intra) / brighter muted red (CC). Replaces
+    // the cold blue scheme of N.2.
+
     private static Color NodeBaseColor(int layer) => layer switch
     {
-        0 => new Color(0.20f, 0.28f, 0.50f),  // Low: deep blue
-        1 => new Color(0.28f, 0.35f, 0.60f),  // Mid: medium blue
-        _ => new Color(0.35f, 0.42f, 0.65f),  // High: light blue
+        0 => new Color(0.92f, 0.88f, 0.78f),   // very light warm beige (Low)
+        1 => new Color(0.70f, 0.55f, 0.38f),   // medium warm tan (Mid)
+        _ => new Color(0.48f, 0.34f, 0.22f),   // darker tan, still warm, not black (High)
     };
 
     private static Color EdgeBaseColor(int layer) => layer switch
     {
-        0 => new Color(0.13f, 0.18f, 0.32f, 0.55f),
-        1 => new Color(0.18f, 0.22f, 0.40f, 0.55f),
-        _ => new Color(0.25f, 0.30f, 0.50f, 0.55f),
+        // "Between pastel and normal red": muted dusty reds, alpha ramps
+        // up toward High so deeper layers feel more "synaptic".
+        0 => new Color(0.72f, 0.38f, 0.38f, 0.50f),
+        1 => new Color(0.78f, 0.35f, 0.35f, 0.55f),
+        _ => new Color(0.82f, 0.32f, 0.32f, 0.60f),
     };
 
     private static Color CCBaseColor(int layer) => layer switch
     {
-        // CC bundles are cyan-tinted against the blue intra-edges — the
-        // bundle reads as a distinct "commisure" even before N.4.
-        0 => new Color(0.10f, 0.28f, 0.45f, 0.75f),
-        1 => new Color(0.15f, 0.35f, 0.55f, 0.75f),
-        _ => new Color(0.22f, 0.42f, 0.65f, 0.75f),
+        // CC bundle slightly brighter / more opaque than intra so it still
+        // reads as a distinct "highway" bundle under the new uniform-red
+        // palette (previously distinguished by hue — cyan vs blue).
+        0 => new Color(0.80f, 0.32f, 0.32f, 0.78f),
+        1 => new Color(0.85f, 0.28f, 0.28f, 0.82f),
+        _ => new Color(0.90f, 0.24f, 0.24f, 0.85f),
     };
 
     public override void _Process(double delta)
