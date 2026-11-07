@@ -53,6 +53,11 @@ public partial class MainNodeNeural : Node3D
     private float _lastAppliedScale = 1.0f;
     private bool _loggedBadNodePos;
 
+    // P2-A preview capture (added to neural in N.9-fix3 — it was in
+    // MainNode and MainNode3D from P2-A but never ported to the neural
+    // scene, which was created afterwards).
+    private bool _previewFirstCaptureLogged;
+
     // N.7: restructure state.
     private bool _restructureActive;
     private double _restructureStartTime;
@@ -718,6 +723,14 @@ public partial class MainNodeNeural : Node3D
 
         _visualTime += delta;
         UpdateIdleCamera();
+
+        // P2-A preview capture — was missing in neural (added in N.9-fix3).
+        // ShouldCapturePreview gates on IsPreviewConnected AND 200 ms since
+        // last capture, so this is a no-op when the inspector is not listening
+        // or during rapid scene transitions.
+        double previewNow = Time.GetTicksMsec() / 1000.0;
+        if (_ipc.ShouldCapturePreview(previewNow))
+            CapturePreviewAfterDraw();
     }
 
     private void BuildAdjacency()
@@ -911,6 +924,37 @@ public partial class MainNodeNeural : Node3D
             center.Y + yOffset,
             center.Z + Mathf.Sin(angle) * orbitRadius);
         _camera.LookAt(center);
+    }
+
+    private async void CapturePreviewAfterDraw()
+    {
+        // Defer to FramePostDraw — in GL compatibility mode, reading the
+        // viewport texture from _Process returns black because the GPU has
+        // not finished writing the current frame yet. Same pattern as
+        // MainNode3D (P2-A).
+        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+
+        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
+
+        var img = GetViewport().GetTexture().GetImage();
+        if (img == null || img.IsEmpty()) return;
+
+        if (!_previewFirstCaptureLogged)
+        {
+            _previewFirstCaptureLogged = true;
+            int nonBlack = 0;
+            for (int y = 0; y < img.GetHeight(); y += 32)
+                for (int x = 0; x < img.GetWidth(); x += 32)
+                {
+                    var c = img.GetPixel(x, y);
+                    if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
+                }
+            GD.Print($"[Preview] Neural first capture {img.GetWidth()}x{img.GetHeight()}, non-black: {nonBlack}");
+        }
+
+        img.Resize(320, 180, Image.Interpolation.Bilinear);
+        _ipc.QueuePreview(img);
+        img.Dispose();
     }
 
     private static bool IsFinite(Vector3 v)
