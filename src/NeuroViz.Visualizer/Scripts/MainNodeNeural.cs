@@ -680,14 +680,18 @@ public partial class MainNodeNeural : Node3D
         float targetFov = 75f + shiver * 8f;
         _camera.Fov = Mathf.Lerp(_camera.Fov, targetFov, 1f - Mathf.Exp(-8f * (float)delta));
 
+        // N.10-fix2: restructure runs BEFORE UpdateNodeTransforms so node
+        // instance transforms reflect the SAME topology positions that just
+        // rebuilt the edge meshes. Previously: updateNodeTransforms wrote
+        // instance transforms from stale positions, then TickRestructure
+        // updated topology + rebuilt meshes — nodes lagged edges by 1 frame
+        // (visible detachment during the 2.5 s motion).
+        if (_restructureActive)
+            TickRestructure();
 
         float nonuniformity = (1f - _smoothHarmonicity) * MaxNonuniformity;
         UpdateNodeTransforms(nonuniformity);
-
         UpdateNodeColors(pitch);
-
-        if (_restructureActive)
-            TickRestructure();
 
         // CC bundles: each layer's brightness tracks its band_energy. Range
         // [0.5, 2.0] — dimmer than baseline at silence, brighter than baseline
@@ -849,7 +853,14 @@ public partial class MainNodeNeural : Node3D
                 if (waveActive)
                 {
                     float dist = (basePos - StructureCenter).Length();
-                    float distNorm = Mathf.Clamp(dist / 1.0f, 0f, 1f);
+                    // N.10-fix2: use _maxNodeDist (the same value passed to the edge
+                    // shader as wave_max_dist), not a hardcoded 1.0. N.4-fix5 hardcoded
+                    // 1.0 because _maxNodeDist was 0 in the broken state; with that fixed,
+                    // _maxNodeDist is consistently ~0.944, and 1.0 vs 0.944 produces a 6%
+                    // difference in wave arrival time for nodes vs edges — visible as
+                    // edges detaching from nodes during the wave.
+                    float maxDist = Mathf.Max(_maxNodeDist, 0.1f);
+                    float distNorm = Mathf.Clamp(dist / maxDist, 0f, 1f);
 
                     float arrival = waveStartVisual + distNorm * WaveDuration
                                   + _nodePhase[i] * nonuniformity;
