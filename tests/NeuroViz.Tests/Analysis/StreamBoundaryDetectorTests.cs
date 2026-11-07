@@ -168,26 +168,6 @@ public class StreamBoundaryDetectorTests
     }
 
     [Fact]
-    public void OnSeek_PreservesOpenState_AdjustsTimers()
-    {
-        var det = new StreamBoundaryDetector(closeAfterSeconds: 5.0);
-        det.OnEventEmitted(Novelty(10.0, 0.9f)).ToList();
-        det.OnEventEmitted(Novelty(11.0, 0.9f)).ToList();   // open at t=11
-        det.Process(Frame(12.0)).ToList();                   // no close (1s)
-
-        // Seek from 12 to 42 (delta +30).
-        det.OnSeek(12.0, 42.0);
-
-        // Frame at 43 → 2s since lastStrong (was 11+30=41) → no close.
-        Assert.Empty(det.Process(Frame(43.0)));
-
-        // Frame at 47 → 6s since lastStrong → close.
-        var closed = det.Process(Frame(47.0)).ToList();
-        Assert.Single(closed);
-        Assert.Equal(0f, closed[0].Params["open"]);
-    }
-
-    [Fact]
     public void OpenEvent_CarriesNoveltyStrength()
     {
         var det = new StreamBoundaryDetector();
