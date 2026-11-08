@@ -1,5 +1,4 @@
 shader_type spatial;
-render_mode opaque;
 // Lit (default render_mode) — keeps shadows from N.2-fix2.
 // Activation is encoded in COLOR.a by the C# side (1 - activation).
 // Albedo comes from COLOR.rgb (already activation-tinted by C#).
