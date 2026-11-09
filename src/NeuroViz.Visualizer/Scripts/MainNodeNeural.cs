@@ -30,6 +30,11 @@ public partial class MainNodeNeural : Node3D
     private ParamValueRef _pitchState = new();
     private ShaderMaterial _nodeMaterial = null!;
     private ShaderMaterial _edgeMaterial = null!;
+
+    // N.10-fix8: data texture for edge-node activation sync
+    private Image _activationImage = null!;
+    private ImageTexture _activationTexture = null!;
+
     private double _lastFluxFlashTime = double.NegativeInfinity;
     private double _lastFrameClock = double.NegativeInfinity;
 
@@ -216,6 +221,21 @@ public partial class MainNodeNeural : Node3D
         BuildAdjacency();
         _activation = new float[_topology.Nodes.Count];
 
+        _activationImage = Image.CreateEmpty(_topology.Nodes.Count, 1, false, Image.Format.Rf);
+        _activationTexture = ImageTexture.CreateFromImage(_activationImage);
+
+        _edgeMaterial.SetShaderParameter("activation_tex", _activationTexture);
+        _edgeMaterial.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
+
+        foreach (var m in _ccMaterials)
+        {
+            if (m != null)
+            {
+                m.SetShaderParameter("activation_tex", _activationTexture);
+                m.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
+            }
+        }
+
         PrecomputeNodeWaveData();   // ← сначала, чтобы _maxNodeDist был готов
 
         _waveReceivers.Clear();
@@ -371,6 +391,7 @@ public partial class MainNodeNeural : Node3D
         var intra = _topology.Edges.Where(e => !e.IsCrossCallosum).ToList();
         var vertices = new Vector3[intra.Count * 2];
         var colors = new Color[intra.Count * 2];
+        var uvs = new Vector2[intra.Count * 2]; // N.10-fix8
 
         for (int i = 0; i < intra.Count; i++)
         {
@@ -381,9 +402,12 @@ public partial class MainNodeNeural : Node3D
             var color = EdgeBaseColor(a.Layer);
             colors[i * 2] = color;
             colors[i * 2 + 1] = color;
+            // Encode node indices in UV for shader sampling
+            uvs[i * 2] = new Vector2(intra[i].A, intra[i].B);
+            uvs[i * 2 + 1] = new Vector2(intra[i].A, intra[i].B);
         }
 
-        _intraMeshInstance.Mesh = MakeLineMesh(vertices, colors);
+        _intraMeshInstance.Mesh = MakeLineMesh(vertices, colors, uvs);
     }
 
     // ── CC edges (ArrayMesh with quadratic bezier arcs) ────────────
@@ -430,6 +454,7 @@ public partial class MainNodeNeural : Node3D
             var edges = ccByLayer[layer];
             var vertices = new List<Vector3>(edges.Count * segmentsPerArc * 2);
             var colors = new List<Color>(edges.Count * segmentsPerArc * 2);
+            var uvs = new List<Vector2>(edges.Count * segmentsPerArc * 2);
 
             foreach (var edge in edges)
             {
@@ -445,11 +470,13 @@ public partial class MainNodeNeural : Node3D
                     var curr = BezierQuadratic(a.Position, control, b.Position, t);
                     vertices.Add(prev); vertices.Add(curr);
                     colors.Add(color); colors.Add(color);
+                    uvs.Add(new Vector2(edge.A, edge.B));
+                    uvs.Add(new Vector2(edge.A, edge.B));
                     prev = curr;
                 }
             }
 
-            _ccMeshInstances[layer].Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray());
+            _ccMeshInstances[layer].Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray(), uvs.ToArray());
         }
     }
 
@@ -475,12 +502,13 @@ public partial class MainNodeNeural : Node3D
         return u * u * p0 + 2f * u * t * p1 + t * t * p2;
     }
 
-    private static ArrayMesh MakeLineMesh(Vector3[] vertices, Color[] colors)
+    private static ArrayMesh MakeLineMesh(Vector3[] vertices, Color[] colors, Vector2[] uvs)
     {
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
         arrays[(int)Mesh.ArrayType.Color] = colors;
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs; // N.10-fix8
 
         var mesh = new ArrayMesh();
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
@@ -717,6 +745,11 @@ public partial class MainNodeNeural : Node3D
         // N.10-fix7: shared wave time — same clock as the node continuous
         // wave (N.10-fix6), so edges and their endpoint nodes flow in sync.
         float waveTime = (float)_visualTime;
+        // N.10-fix8: update activation texture from the current array
+        var bytes = new byte[_activation.Length * sizeof(float)];
+        Buffer.BlockCopy(_activation, 0, bytes, 0, bytes.Length);
+        _activationImage.SetData(_topology.Nodes.Count, 1, false, Image.Format.Rf, bytes);
+        _activationTexture.Update(_activationImage);
 
         for (int layer = 0; layer < 3; layer++)
         {

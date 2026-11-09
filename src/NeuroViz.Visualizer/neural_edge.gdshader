@@ -3,15 +3,12 @@ render_mode unshaded, blend_mix;
 
 uniform float coherence = 1.0;
 uniform float bundle_energy = 1.0;
-
-// N.10-fix7: spatial wave for flowing brightness (same idea as the
-// node continuous wave, N.10-fix6). Instead of the whole material
-// lighting up uniformly when band_energy rises, a slow sine wave
-// moves through the mesh, so the CC bundles and intra edges look like
-// energy flowing through the network.
-// Must be set to 0.0 for materials that should NOT have this effect.
 uniform float bundle_wave_time = 0.0;
 uniform float bundle_wave_strength = 0.0;
+
+// N.10-fix8: activation flow from connected nodes
+uniform sampler2D activation_tex;
+uniform float texture_width = 1600.0;
 
 uniform vec3  wave_center = vec3(1.0, 0.0, 0.0);
 uniform float wave_max_dist = 1.145;
@@ -24,26 +21,22 @@ uniform float current_time = 0.0;
 
 varying vec3 v_color;
 varying float v_alpha;
-varying float v_wave;   // [0, 1], per-vertex wave for flowing brightness
+varying float v_wave;
+varying float v_node_activation; // 0..1 from connected nodes
 
 float hash_phase(vec3 pos) {
     return sin(pos.x * 17.0 + pos.y * 23.0 + pos.z * 31.0);
 }
 
 void vertex() {
-    // Capture the base position BEFORE the release-wave displacement —
-    // the flow wave is anchored to physical geometry, not the animated
-    // position, so the brightness pattern does not wobble during a
-    // release pulse.
     vec3 base_pos = VERTEX;
 
-    // Flow wave — same formula as C# ComputeContinuousWave so edges
-    // and their endpoint nodes flow in sync.
+    // Flow wave
     float n1 = sin(base_pos.x * 6.0 + base_pos.y * 4.0 + bundle_wave_time * 1.5);
     float n2 = sin(base_pos.y * 8.0 - base_pos.z * 7.0 + bundle_wave_time * 2.0);
     v_wave = (n1 + n2) * 0.25 + 0.5;
 
-    // Release wave (unchanged from N.4-fix3).
+    // Release wave
     float dist = length(VERTEX - wave_center);
     float dist_norm = dist / max(wave_max_dist, 0.001);
     float phase = hash_phase(VERTEX);
@@ -56,18 +49,25 @@ void vertex() {
     float factor = 1.0 - wave_amplitude * pulse;
     VERTEX = wave_center + (VERTEX - wave_center) * factor;
 
+    // Read node activation from data texture using UV.x (Node A) and UV.y (Node B)
+    // We pass node indices as UVs during mesh generation.
+    float act_a = texture(activation_tex, vec2((UV.x + 0.5) / texture_width, 0.5)).r;
+    float act_b = texture(activation_tex, vec2((UV.y + 0.5) / texture_width, 0.5)).r;
+    // Edge lights up if EITHER endpoint is active, but we use max so it doesn't double up
+    v_node_activation = clamp(max(act_a, act_b), 0.0, 1.0);
+
     v_color = COLOR.rgb;
     v_alpha = COLOR.a;
 }
 
 void fragment() {
-    // waveFactor: 1.0 at strength 0, [0.2, 1.8] at strength 1. Trough
-    // gets 20% brightness, peak 180% — visible flow without making
-    // the trough invisible. At wave=0.5 (median), factor = 1.0 so
-    // the average brightness is unchanged from the no-wave baseline.
-    float waveFactor = 1.0 - bundle_wave_strength * 0.8
-                     + v_wave * bundle_wave_strength * 1.6;
+    float waveFactor = 1.0 - bundle_wave_strength * 0.8 + v_wave * bundle_wave_strength * 1.6;
+    vec3 base_edge = v_color * coherence * bundle_energy * waveFactor;
 
-    ALBEDO = v_color * coherence * bundle_energy * waveFactor;
+    // Active edge color (bright lime). Multiplied by 2.0 for HDR so bloom catches it.
+    vec3 active_edge = vec3(0.83, 1.0, 0.21) * 2.0;
+
+    // Mix based on node activation. At act=0, normal edge. At act=1, glowing gold.
+    ALBEDO = mix(base_edge, active_edge, v_node_activation);
     ALPHA = v_alpha;
 }
