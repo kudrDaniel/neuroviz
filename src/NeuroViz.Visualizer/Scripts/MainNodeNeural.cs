@@ -998,13 +998,15 @@ public partial class MainNodeNeural : Node3D
                 1 => _smoothMid,
                 _ => _smoothHigh,
             };
-            float continuousContrib = layerEnergy * 0.4f;
 
-            // N.6: vad_state → hemisphere bias. Voice detected (vad=1) → left
-            // hemisphere (index 0) gets +0.15 baseline activation, right +0.05.
-            // Reads as "when there's voice, the left side of the network glows
-            // faintly even without a cascade" — a subtle but distinct channel
-            // from pan_x's seed-hemisphere selection.
+            // Modulate the layer's continuous energy by a moving 3D wave. The
+            // trough of the wave gets 20% of the energy, the peak gets 100%.
+            // This turns the uniform "whole layer glows red" into "waves of
+            // energy flow through the layer".
+            float wave = ComputeContinuousWave(node.Position, _visualTime);
+            float continuousContrib = layerEnergy * 0.4f * (0.2f + 0.8f * wave);
+
+            // N.6: vad_state → hemisphere bias.
             float hemiBias = node.Hemisphere == 0
                 ? _smoothVad * 0.15f
                 : _smoothVad * 0.05f;
@@ -1021,6 +1023,26 @@ public partial class MainNodeNeural : Node3D
             _nodeMultimesh.SetInstanceColor(i,
                 new Color(finalColor.R, finalColor.G, finalColor.B, 1f - effAct));
         }
+    }
+
+    /// <summary>
+    /// Computes a spatially coherent, time-varying wave in [0, 1] based on
+    /// the node's position and the visual clock. Used to modulate the
+    /// continuous per-layer activation so it looks like energy flowing
+    /// through the network rather than the whole layer glowing in unison.
+    ///
+    /// Two overlapping sine waves (different frequencies, different axes)
+    /// create an organic, non-repeating pattern that drifts over time.
+    /// Spatially coherent: neighbouring nodes have similar values, so the
+    /// result reads as a wave, not as noise.
+    /// </summary>
+    private static float ComputeContinuousWave(Vector3 pos, double time)
+    {
+        float t = (float)time;
+        float n1 = Mathf.Sin(pos.X * 6f + pos.Y * 4f + t * 1.5f);
+        float n2 = Mathf.Sin(pos.Y * 8f - pos.Z * 7f + t * 2.0f);
+        // Sum of two sines is in [-2, 2]; remap to [0, 1].
+        return (n1 + n2) * 0.25f + 0.5f;
     }
 
     /// <summary>
