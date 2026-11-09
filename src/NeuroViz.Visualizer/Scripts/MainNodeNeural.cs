@@ -35,6 +35,9 @@ public partial class MainNodeNeural : Node3D
     private Image _activationImage = null!;
     private ImageTexture _activationTexture = null!;
 
+    private Image _phaseImage = null!;
+    private ImageTexture _phaseTexture = null!;
+
     private double _lastFluxFlashTime = double.NegativeInfinity;
     private double _lastFrameClock = double.NegativeInfinity;
 
@@ -233,9 +236,13 @@ public partial class MainNodeNeural : Node3D
 
         _activationImage = Image.CreateEmpty(_topology.Nodes.Count, 1, false, Image.Format.Rf);
         _activationTexture = ImageTexture.CreateFromImage(_activationImage);
+        _phaseImage = Image.CreateEmpty(_topology.Nodes.Count, 1, false, Image.Format.Rf);
+        _phaseTexture = ImageTexture.CreateFromImage(_phaseImage);
+        UpdatePhaseTexture();
 
         _edgeMaterial.SetShaderParameter("activation_tex", _activationTexture);
         _edgeMaterial.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
+        _edgeMaterial.SetShaderParameter("phase_tex", _phaseTexture);
 
         foreach (var m in _ccMaterials)
         {
@@ -243,6 +250,7 @@ public partial class MainNodeNeural : Node3D
             {
                 m.SetShaderParameter("activation_tex", _activationTexture);
                 m.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
+                m.SetShaderParameter("phase_tex", _phaseTexture);
             }
         }
 
@@ -1193,6 +1201,16 @@ public partial class MainNodeNeural : Node3D
         _maxNodeDist = maxDist;
 
         GD.Print($"[Neural] Wave precompute: nodes={n}, maxDist={_maxNodeDist:F3}");
+        UpdatePhaseTexture(); // N.10-fix11
+    }
+
+    private void UpdatePhaseTexture()
+    {
+        if (_phaseImage == null || _nodePhase == null) return;
+        var bytes = new byte[_nodePhase.Length * sizeof(float)];
+        Buffer.BlockCopy(_nodePhase, 0, bytes, 0, bytes.Length);
+        _phaseImage.SetData(_topology.Nodes.Count, 1, false, Image.Format.Rf, bytes);
+        _phaseTexture.Update(_phaseImage);
     }
 
     /// <summary>
@@ -1445,6 +1463,7 @@ public partial class MainNodeNeural : Node3D
             _nodeBasePos[i] = _topology.Nodes[i].Position;
             _nodePhase[i] = HashPhase(_topology.Nodes[i].Position);
         }
+        UpdatePhaseTexture(); // N.10-fix11
 
         for (int i = 0; i < _topology.Nodes.Count; i++)
         {

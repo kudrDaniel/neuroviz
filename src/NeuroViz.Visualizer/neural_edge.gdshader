@@ -9,6 +9,7 @@ uniform float bundle_wave_strength = 0.0;
 // N.10-fix8: activation flow from connected nodes
 uniform sampler2D activation_tex;
 uniform float texture_width = 1600.0;
+uniform sampler2D phase_tex; // N.10-fix11
 
 uniform vec3  wave_center = vec3(1.0, 0.0, 0.0);
 uniform float wave_max_dist = 1.145;
@@ -42,7 +43,11 @@ void vertex() {
     // Release wave
     float dist = length(VERTEX - wave_center);
     float dist_norm = dist / max(wave_max_dist, 0.001);
-    float phase = hash_phase(VERTEX);
+    // N.10-fix11: read the exact phase from the CPU-computed texture.
+    // Previously used hash_phase(VERTEX), which differed slightly from C#'s
+    // MathF.Sin for moved nodes — causing nodes and edges to arrive at
+    // different wave times. Texture lookup guarantees bit-exact match.
+    float phase = texture(phase_tex, vec2((UV.x + 0.5) / texture_width, 0.5)).r;
 
     // Sum contributions from all active waves.
     float total_pulse = 0.0;
