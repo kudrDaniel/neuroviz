@@ -51,8 +51,19 @@ public partial class MainNodeNeural : Node3D
     private Vector3[] _nodeBasePos = null!;
     private float[] _nodePhase = null!;
     private float _maxNodeDist;
-    private double _waveStartTime = double.NegativeInfinity;
-    private float _waveAmplitude;
+    // N.10-fix9: multiple overlapping release waves. Previous impl had
+    // three scalars — a new release overwrote the current wave, killing
+    // its propagation. Now each release appends to a list; node/edge
+    // pulse is the SUM of contributions from all active waves. Old waves
+    // are pruned when their propagation window closes.
+    private const int MaxConcurrentWaves = 4;
+    private readonly List<ReleaseWave> _activeWaves = new();
+
+    private struct ReleaseWave
+    {
+        public double VisualStart;
+        public float Amplitude;
+    }
     private double _lastReleaseSetAt = double.NegativeInfinity;
     private bool _wasWaveActive;
     private float _lastAppliedScale = 1.0f;
@@ -80,7 +91,6 @@ public partial class MainNodeNeural : Node3D
     // these to Settings; for now they are constants.
     private Camera3D _camera = null!;
     private double _visualTime;
-    private double _waveVisualStart = double.NegativeInfinity;
     private double _restructureVisualStart = double.NegativeInfinity;
     private float _cameraOrbitSpeed = NeuralSceneConfig.CameraOrbitSpeed;
     private float _cameraYAmplitude = NeuralSceneConfig.CameraYAmplitude;
@@ -609,9 +619,7 @@ public partial class MainNodeNeural : Node3D
                 if (rel.SetAtSeconds > _lastReleaseSetAt + 0.001)
                 {
                     _lastReleaseSetAt = rel.SetAtSeconds;
-                    _waveStartTime = rel.SetAtSeconds;             // audio clock — snapshot/diagnostics
-                    _waveVisualStart = _visualTime;                // visual clock — animation
-                    _waveAmplitude = Mathf.Clamp(rel.Value * WaveAmplitude, 0f, 0.25f);
+                    AddReleaseWave(rel.Value);
                     _wasWaveActive = false;
                 }
             }
@@ -784,7 +792,6 @@ public partial class MainNodeNeural : Node3D
             $"FPS: {Engine.GetFramesPerSecond():F0} | " +
             $"Pending: {_pending.Count} | Active: {activeCount} | " +
             (_restructureActive ? "RESTRUCT" : "idle") + "\n" +
-            $"wave: {(_wasWaveActive ? $"ACTIVE {_waveAmplitude:F2}" : "idle")} | " +
             $"nonunif: {nonuniformity:F2}\n" +
             $"bands: {_smoothLow:F2}/{_smoothMid:F2}/{_smoothHigh:F2} | " +
             $"flux: {_smoothFlux:F2} | harm: {_smoothHarmonicity:F2} | " +
@@ -866,17 +873,9 @@ public partial class MainNodeNeural : Node3D
     /// </summary>
     private void UpdateNodeTransforms(float nonuniformity)
     {
-        // N.10-fix: wave progression uses visual clock (delta-advanced,
-        // 60 Hz), not audio clock (MMF, ~25–50 Hz from BASS DSP block
-        // size). At audio-clock sample rate the wave position changes
-        // in ~2-frame steps, rendered at 60 FPS → visible stutter.
-        // During playback audio and visual clock run 1:1, so wave timing
-        // is unchanged; during pause the wave finishes at wall rate
-        // instead of freezing mid-pulse, which is the better UX anyway.
+        PruneExpiredWaves();
         float nowVisual = (float)_visualTime;
-        float waveStartVisual = (float)_waveVisualStart;
-        bool waveActive = nowVisual > waveStartVisual - MaxNonuniformity
-                       && nowVisual < waveStartVisual + WaveDuration + WavePulseDuration + MaxNonuniformity;
+        bool hasActiveWaves = _activeWaves.Count > 0;
 
         float baseScale = 1.0f - _smoothSmr * 0.15f;
         if (float.IsNaN(baseScale) || float.IsInfinity(baseScale))
@@ -887,7 +886,7 @@ public partial class MainNodeNeural : Node3D
             nonuniformity = 0f;
 
         bool scaleChanged = Mathf.Abs(baseScale - _lastAppliedScale) > 1e-4f;
-        bool needsRewrite = waveActive || _wasWaveActive || scaleChanged || _restructureActive;
+        bool needsRewrite = hasActiveWaves || _wasWaveActive || scaleChanged || _restructureActive;
 
         if (needsRewrite)
         {
@@ -909,29 +908,36 @@ public partial class MainNodeNeural : Node3D
 
                 var pos = basePos;
 
-                if (waveActive)
+                if (hasActiveWaves)
                 {
                     float dist = (basePos - StructureCenter).Length();
-                    // N.10-fix2: use _maxNodeDist (the same value passed to the edge
-                    // shader as wave_max_dist), not a hardcoded 1.0. N.4-fix5 hardcoded
-                    // 1.0 because _maxNodeDist was 0 in the broken state; with that fixed,
-                    // _maxNodeDist is consistently ~0.944, and 1.0 vs 0.944 produces a 6%
-                    // difference in wave arrival time for nodes vs edges — visible as
-                    // edges detaching from nodes during the wave.
                     float maxDist = Mathf.Max(_maxNodeDist, 0.1f);
                     float distNorm = Mathf.Clamp(dist / maxDist, 0f, 1f);
 
-                    float arrival = waveStartVisual + distNorm * WaveDuration
-                                  + _nodePhase[i] * nonuniformity;
-                    float el = nowVisual - arrival;
-                    float pulse = 0f;
-                    if (el > 0f && el < WavePulseDuration)
-                        pulse = Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
+                    // Sum contributions from all active waves. Each wave
+                    // contributes amplitude × sin(π·elapsed/pulseDur) at the
+                    // moment it reaches this node. Overlapping waves
+                    // compound; waves offset in time produce distinct dips.
+                    float totalPulse = 0f;
+                    foreach (var wave in _activeWaves)
+                    {
+                        float arrival = (float)wave.VisualStart
+                                      + distNorm * WaveDuration
+                                      + _nodePhase[i] * nonuniformity;
+                        float el = nowVisual - arrival;
+                        if (el > 0f && el < WavePulseDuration)
+                            totalPulse += wave.Amplitude
+                                        * Mathf.Sin(el / WavePulseDuration * Mathf.Pi);
+                    }
 
-                    float factor = 1f - _waveAmplitude * pulse;
+                    float factor = 1f - totalPulse;
                     if (float.IsNaN(factor) || float.IsInfinity(factor))
                         factor = 1f;
-                    factor = Mathf.Clamp(factor, 0.5f, 1.5f);
+                    // Floor at 0.4 (was 0.5 with single wave). Multiple
+                    // overlapping waves at 0.15 each can sum to 0.6+; floor
+                    // prevents the structure collapsing to a point while
+                    // still allowing visible compound compression.
+                    factor = Mathf.Clamp(factor, 0.4f, 1.5f);
 
                     var computed = StructureCenter + (basePos - StructureCenter) * factor;
                     pos = IsFinite(computed) ? computed : basePos;
@@ -943,25 +949,66 @@ public partial class MainNodeNeural : Node3D
             _lastAppliedScale = baseScale;
         }
 
-        if (waveActive)
+        // Pack active waves into two vec4s for the shader. Empty slots stay
+        // at 0 amplitude — the shader's per-wave check skips them.
+        var starts = new Vector4(0, 0, 0, 0);
+        var amps = new Vector4(0, 0, 0, 0);
+        for (int w = 0; w < _activeWaves.Count && w < MaxConcurrentWaves; w++)
         {
-            foreach (var m in _waveReceivers)
+            float s = (float)_activeWaves[w].VisualStart;
+            float a = _activeWaves[w].Amplitude;
+            switch (w)
             {
-                m.SetShaderParameter("wave_start", waveStartVisual);
-                m.SetShaderParameter("wave_amplitude", _waveAmplitude);
-                m.SetShaderParameter("wave_nonuniformity", nonuniformity);
+                case 0: starts.X = s; amps.X = a; break;
+                case 1: starts.Y = s; amps.Y = a; break;
+                case 2: starts.Z = s; amps.Z = a; break;
+                case 3: starts.W = s; amps.W = a; break;
             }
-            _wasWaveActive = true;
         }
-        else if (_wasWaveActive)
-        {
-            foreach (var m in _waveReceivers)
-                m.SetShaderParameter("wave_amplitude", 0f);
-            _wasWaveActive = false;
-            _waveAmplitude = 0f;
-        }
+
         foreach (var m in _waveReceivers)
+        {
+            m.SetShaderParameter("wave_starts", starts);
+            m.SetShaderParameter("wave_amplitudes", amps);
+            m.SetShaderParameter("wave_nonuniformity", nonuniformity);
             m.SetShaderParameter("current_time", nowVisual);
+        }
+
+        _wasWaveActive = hasActiveWaves;
+    }
+
+    private void AddReleaseWave(float releaseValue)
+    {
+        float amplitude = Mathf.Clamp(releaseValue * WaveAmplitude, 0f, 0.25f);
+        if (amplitude <= 0.001f) return;
+
+        // Prune expired waves first so we don't accidentally cap out
+        // against already-dead entries.
+        float nowVisual = (float)_visualTime;
+        double cutoff = nowVisual - (WaveDuration + WavePulseDuration + MaxNonuniformity + 0.1);
+        _activeWaves.RemoveAll(w => w.VisualStart < cutoff);
+
+        _activeWaves.Add(new ReleaseWave
+        {
+            VisualStart = _visualTime,
+            Amplitude = amplitude,
+        });
+
+        // Cap: drop oldest. Realistically release fires < 4 Hz, wave lasts
+        // ~1 s, so 4 slots are plenty. If a user slams releases at 10 Hz
+        // during a break, the oldest 6 are lost — acceptable (their
+        // remaining propagation at this point is negligible anyway).
+        while (_activeWaves.Count > MaxConcurrentWaves)
+            _activeWaves.RemoveAt(0);
+
+        GD.Print($"[Neural] Wave launched (active: {_activeWaves.Count})");
+    }
+
+    private void PruneExpiredWaves()
+    {
+        float nowVisual = (float)_visualTime;
+        double cutoff = nowVisual - (WaveDuration + WavePulseDuration + MaxNonuniformity + 0.1);
+        _activeWaves.RemoveAll(w => w.VisualStart < cutoff);
     }
 
     /// <summary>
@@ -1194,9 +1241,7 @@ public partial class MainNodeNeural : Node3D
         _lastReleaseSetAt = double.NegativeInfinity;
         _lastSeedTime = double.NegativeInfinity;
         _lastFluxFlashTime = double.NegativeInfinity;
-        _waveStartTime = double.NegativeInfinity;
-        _waveVisualStart = double.NegativeInfinity;
-        _waveAmplitude = 0f;
+        _activeWaves.Clear();
 
         // Zero activation — a fading cascade from before the seek would
         // confuse against the new position's events.
@@ -1708,6 +1753,10 @@ public partial class MainNodeNeural : Node3D
             m.SetShaderParameter("wave_max_dist", _maxNodeDist);
             m.SetShaderParameter("wave_duration", WaveDuration);
             m.SetShaderParameter("wave_pulse_duration", WavePulseDuration);
+            // N.10-fix9: array uniforms default to zero waves. Updated
+            // per-frame in UpdateNodeTransforms.
+            m.SetShaderParameter("wave_starts", Vector4.Zero);
+            m.SetShaderParameter("wave_amplitudes", Vector4.Zero);
         }
     }
 

@@ -12,8 +12,11 @@ uniform float texture_width = 1600.0;
 
 uniform vec3  wave_center = vec3(1.0, 0.0, 0.0);
 uniform float wave_max_dist = 1.145;
-uniform float wave_start = -1.0e10;
-uniform float wave_amplitude = 0.0;
+// N.10-fix9: up to 4 concurrent release waves, packed as vec4 for
+// simplicity and cross-version safety (array uniforms work but vec4
+// is bulletproof across Godot 4.x versions).
+uniform vec4 wave_starts;
+uniform vec4 wave_amplitudes;
 uniform float wave_duration = 0.6;
 uniform float wave_pulse_duration = 0.4;
 uniform float wave_nonuniformity = 0.0;
@@ -40,13 +43,36 @@ void vertex() {
     float dist = length(VERTEX - wave_center);
     float dist_norm = dist / max(wave_max_dist, 0.001);
     float phase = hash_phase(VERTEX);
-    float arrival = wave_start + dist_norm * wave_duration + phase * wave_nonuniformity;
-    float elapsed = current_time - arrival;
-    float pulse = 0.0;
-    if (elapsed > 0.0 && elapsed < wave_pulse_duration) {
-        pulse = sin(elapsed / wave_pulse_duration * 3.14159265);
+
+    // Sum contributions from all active waves.
+    float total_pulse = 0.0;
+
+    // Wave 0
+    if (wave_amplitudes.x > 0.001) {
+        float el = current_time - (wave_starts.x + dist_norm * wave_duration + phase * wave_nonuniformity);
+        if (el > 0.0 && el < wave_pulse_duration)
+            total_pulse += wave_amplitudes.x * sin(el / wave_pulse_duration * 3.14159265);
     }
-    float factor = 1.0 - wave_amplitude * pulse;
+    // Wave 1
+    if (wave_amplitudes.y > 0.001) {
+        float el = current_time - (wave_starts.y + dist_norm * wave_duration + phase * wave_nonuniformity);
+        if (el > 0.0 && el < wave_pulse_duration)
+            total_pulse += wave_amplitudes.y * sin(el / wave_pulse_duration * 3.14159265);
+    }
+    // Wave 2
+    if (wave_amplitudes.z > 0.001) {
+        float el = current_time - (wave_starts.z + dist_norm * wave_duration + phase * wave_nonuniformity);
+        if (el > 0.0 && el < wave_pulse_duration)
+            total_pulse += wave_amplitudes.z * sin(el / wave_pulse_duration * 3.14159265);
+    }
+    // Wave 3
+    if (wave_amplitudes.w > 0.001) {
+        float el = current_time - (wave_starts.w + dist_norm * wave_duration + phase * wave_nonuniformity);
+        if (el > 0.0 && el < wave_pulse_duration)
+            total_pulse += wave_amplitudes.w * sin(el / wave_pulse_duration * 3.14159265);
+    }
+
+    float factor = 1.0 - total_pulse;
     VERTEX = wave_center + (VERTEX - wave_center) * factor;
 
     // Read node activation from data texture using UV.x (Node A) and UV.y (Node B)
