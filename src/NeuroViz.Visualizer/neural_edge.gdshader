@@ -72,7 +72,12 @@ void vertex() {
             total_pulse += wave_amplitudes.w * sin(el / wave_pulse_duration * 3.14159265);
     }
 
-    float factor = 1.0 - total_pulse;
+    // N.10-fix10: clamp identically to the C# side (MainNodeNeural.
+    // UpdateNodeTransforms uses Mathf.Clamp(factor, 0.4f, 1.5f)).
+    // Without this, overlapping release waves push total_pulse above
+    // 0.6; nodes stop at factor=0.4 but edges keep compressing → edges
+    // visually lead nodes during multi-wave overlap.
+    float factor = clamp(1.0 - total_pulse, 0.4, 1.5);
     VERTEX = wave_center + (VERTEX - wave_center) * factor;
 
     // Read node activation from data texture using UV.x (Node A) and UV.y (Node B)
