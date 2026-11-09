@@ -353,6 +353,11 @@ public partial class MainNodeNeural : Node3D
     // ── Intra edges (single ArrayMesh, PRIMITIVE_LINES) ────────────
     private void BuildIntraEdgeMesh()
     {
+        // N.10-fix7: subtle flow on intra edges. They are dense (3800+
+        // lines), so a strong wave would look chaotic — 0.25 gives gentle
+        // shimmer that reads as "alive" without becoming noise.
+        _edgeMaterial.SetShaderParameter("bundle_wave_strength", 0.25f);
+
         _intraMeshInstance = new MeshInstance3D
         {
             MaterialOverride = _edgeMaterial,
@@ -395,6 +400,9 @@ public partial class MainNodeNeural : Node3D
             var mat = new ShaderMaterial { Shader = _edgeMaterial.Shader };
             mat.SetShaderParameter("coherence", 1.0f);
             mat.SetShaderParameter("bundle_energy", 1.0f);
+            // N.10-fix7: CC bundles flow strongly — they are the "highways",
+            // dramatic flow reads as energy propagating across hemispheres.
+            mat.SetShaderParameter("bundle_wave_strength", 0.7f);
             _ccMaterials[layer] = mat;
 
             _ccMeshInstances[layer] = new MeshInstance3D
@@ -706,6 +714,10 @@ public partial class MainNodeNeural : Node3D
         // CC bundles: each layer's brightness tracks its band_energy. Range
         // [0.5, 2.0] — dimmer than baseline at silence, brighter than baseline
         // at saturation. Layer 0/1/2 = Low/Mid/High CC commisure.
+        // N.10-fix7: shared wave time — same clock as the node continuous
+        // wave (N.10-fix6), so edges and their endpoint nodes flow in sync.
+        float waveTime = (float)_visualTime;
+
         for (int layer = 0; layer < 3; layer++)
         {
             if (_ccMaterials[layer] == null) continue;
@@ -717,7 +729,11 @@ public partial class MainNodeNeural : Node3D
             };
             float bundleBrightness = 0.5f + bandEnergy * 1.5f;
             _ccMaterials[layer].SetShaderParameter("bundle_energy", bundleBrightness);
+            _ccMaterials[layer].SetShaderParameter("bundle_wave_time", waveTime);
         }
+
+        // Intra edges share one material; wave time updated once per frame.
+        _edgeMaterial.SetShaderParameter("bundle_wave_time", waveTime);
 
         UpdateNeurotransmitters(nowClock);
 

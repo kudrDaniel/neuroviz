@@ -4,6 +4,15 @@ render_mode unshaded, blend_mix;
 uniform float coherence = 1.0;
 uniform float bundle_energy = 1.0;
 
+// N.10-fix7: spatial wave for flowing brightness (same idea as the
+// node continuous wave, N.10-fix6). Instead of the whole material
+// lighting up uniformly when band_energy rises, a slow sine wave
+// moves through the mesh, so the CC bundles and intra edges look like
+// energy flowing through the network.
+// Must be set to 0.0 for materials that should NOT have this effect.
+uniform float bundle_wave_time = 0.0;
+uniform float bundle_wave_strength = 0.0;
+
 uniform vec3  wave_center = vec3(1.0, 0.0, 0.0);
 uniform float wave_max_dist = 1.145;
 uniform float wave_start = -1.0e10;
@@ -15,24 +24,28 @@ uniform float current_time = 0.0;
 
 varying vec3 v_color;
 varying float v_alpha;
+varying float v_wave;   // [0, 1], per-vertex wave for flowing brightness
 
-// Deterministic pseudo-random phase from position, in [-1, 1].
-// Same formula used on the C# side (HashPhase) for node phases —
-// shared endpoints of edges and nodes get identical phase, so they
-// move together through the wave. Small argument (positions are
-// under 2.0 in local coords) keeps sin precision-safe across C# and
-// GLSL implementations.
 float hash_phase(vec3 pos) {
     return sin(pos.x * 17.0 + pos.y * 23.0 + pos.z * 31.0);
 }
 
 void vertex() {
+    // Capture the base position BEFORE the release-wave displacement —
+    // the flow wave is anchored to physical geometry, not the animated
+    // position, so the brightness pattern does not wobble during a
+    // release pulse.
+    vec3 base_pos = VERTEX;
+
+    // Flow wave — same formula as C# ComputeContinuousWave so edges
+    // and their endpoint nodes flow in sync.
+    float n1 = sin(base_pos.x * 6.0 + base_pos.y * 4.0 + bundle_wave_time * 1.5);
+    float n2 = sin(base_pos.y * 8.0 - base_pos.z * 7.0 + bundle_wave_time * 2.0);
+    v_wave = (n1 + n2) * 0.25 + 0.5;
+
+    // Release wave (unchanged from N.4-fix3).
     float dist = length(VERTEX - wave_center);
-    // Guard against wave_max_dist = 0 (would produce inf / NaN in arrival
-    // and propagate to vertex position). max() keeps the shader safe even
-    // if the C# side sets it incorrectly.
-    float safe_max = max(wave_max_dist, 0.001);
-    float dist_norm = dist / safe_max;
+    float dist_norm = dist / max(wave_max_dist, 0.001);
     float phase = hash_phase(VERTEX);
     float arrival = wave_start + dist_norm * wave_duration + phase * wave_nonuniformity;
     float elapsed = current_time - arrival;
@@ -48,7 +61,13 @@ void vertex() {
 }
 
 void fragment() {
-    ALBEDO = v_color * coherence * bundle_energy;
+    // waveFactor: 1.0 at strength 0, [0.2, 1.8] at strength 1. Trough
+    // gets 20% brightness, peak 180% — visible flow without making
+    // the trough invisible. At wave=0.5 (median), factor = 1.0 so
+    // the average brightness is unchanged from the no-wave baseline.
+    float waveFactor = 1.0 - bundle_wave_strength * 0.8
+                     + v_wave * bundle_wave_strength * 1.6;
+
+    ALBEDO = v_color * coherence * bundle_energy * waveFactor;
     ALPHA = v_alpha;
-    EMISSION = v_color * bundle_energy * 0.3;   // только активные CC светятся, ярче при высоком bundle_energy
 }
