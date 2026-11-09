@@ -455,7 +455,14 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         try
         {
-            _ipcServer.LaunchGodot(exePath, projectPath);
+            var scenePayload = new SetVisualizerScenePayload
+            {
+                Scene = Settings.VisualizerScene,
+                NeuralNodesPerHemisphere = Settings.NeuralNodesPerHemisphere,
+                NeuralEdgesPerNode = Settings.NeuralEdgesPerNode,
+                NeuralCCDensity = Settings.NeuralCCDensity,
+            };
+            _ipcServer.LaunchGodot(exePath, projectPath, scenePayload);
         }
         catch (Exception ex)
         {

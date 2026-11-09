@@ -192,6 +192,11 @@ public partial class MainNodeNeural : Node3D
 
     public override void _Ready()
     {
+        // N.10-fix12: Read topology config from command line before doing
+        // anything. This ensures Generate() uses the user's settings even
+        // on cold start, where the scene is loaded before IPC connects.
+        NeuralSceneConfig.InitializeFromCommandLine();
+
         _topology = NeuralTopology.Generate(
     nodesPerHemisphere: NeuralSceneConfig.NodesPerHemisphere,
     edgesPerNode: NeuralSceneConfig.EdgesPerNode,

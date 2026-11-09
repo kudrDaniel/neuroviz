@@ -44,7 +44,7 @@ public sealed class IpcServer : IDisposable
     /// </summary>
     public event Action<PreviewFrame>? PreviewReceived;
 
-    public void LaunchGodot(string godotExePath, string projectPath)
+    public void LaunchGodot(string godotExePath, string projectPath, SetVisualizerScenePayload config)
     {
         // Defense-in-depth: trailing separator перед закрывающей кавычкой
         // ломает парсер аргументов Windows. Убираем его до любых манипуляций.
@@ -69,6 +69,7 @@ public sealed class IpcServer : IDisposable
         };
         psi.ArgumentList.Add("--path");
         psi.ArgumentList.Add(projectPath);
+        AppendSceneArgs(psi, config);
 
         var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Process.Start returned null");
@@ -85,6 +86,17 @@ public sealed class IpcServer : IDisposable
         _ = Task.Run(AcceptControlPipeAsync);
         _ = Task.Run(AcceptEventStreamAsync);
         _ = Task.Run(AcceptPreviewAsync);
+    }
+
+    private static void AppendSceneArgs(ProcessStartInfo psi, SetVisualizerScenePayload config)
+    {
+        // Godot strips everything before "--" and exposes the rest via
+        // OS.GetCmdlineUserArgs().
+        psi.ArgumentList.Add("--");
+        psi.ArgumentList.Add($"--nv-scene={config.Scene}");
+        psi.ArgumentList.Add($"--nv-nodes={config.NeuralNodesPerHemisphere}");
+        psi.ArgumentList.Add($"--nv-edges={config.NeuralEdgesPerNode}");
+        psi.ArgumentList.Add($"--nv-cc={config.NeuralCCDensity.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
     }
 
     public void PushFrame(

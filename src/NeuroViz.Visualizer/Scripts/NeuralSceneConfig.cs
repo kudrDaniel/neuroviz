@@ -1,3 +1,5 @@
+using Godot;
+
 namespace NeuroViz.Visualizer.Scripts;
 
 /// <summary>
@@ -16,4 +18,22 @@ public static class NeuralSceneConfig
     public static float CCDensity = 0.3f;
     public static float CameraOrbitSpeed = 0.05f;
     public static float CameraYAmplitude = 0.4f;
+
+    public static void InitializeFromCommandLine()
+    {
+        var args = OS.GetCmdlineUserArgs();
+        if (args == null) return;
+
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("--nv-nodes=") && int.TryParse(arg.Substring(11), out int nodes))
+                NodesPerHemisphere = Math.Clamp(nodes, 200, 1500);
+            else if (arg.StartsWith("--nv-edges=") && int.TryParse(arg.Substring(11), out int edges))
+                EdgesPerNode = Math.Clamp(edges, 2, 6);
+            else if (arg.StartsWith("--nv-cc=") && float.TryParse(arg.Substring(8), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float cc))
+                CCDensity = Math.Clamp(cc, 0.1f, 1.0f);
+        }
+
+        GD.Print($"[Neural] Config from cmdline: nodes={NodesPerHemisphere}, edges={EdgesPerNode}, cc={CCDensity}");
+    }
 }
