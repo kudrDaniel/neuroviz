@@ -1,4 +1,5 @@
 using Godot;
+using NeuroViz.Core.Ipc;
 
 namespace NeuroViz.Visualizer.Scripts;
 
@@ -25,9 +26,9 @@ public partial class MainNodeNeural : Node3D
     // N.6: continuous inputs for hemisphere bias and node scaling.
     private float _contVad, _smoothVad;
     private float _contSmr, _smoothSmr;
-    private ParamValueRef _shiverState = new();
-    private ParamValueRef _cortexFlashState = new();
-    private ParamValueRef _pitchState = new();
+    private ParamValue? _shiverState = new();
+    private ParamValue? _cortexFlashState = new();
+    private ParamValue? _pitchState = new();
     private ShaderMaterial _nodeMaterial = null!;
     private ShaderMaterial _edgeMaterial = null!;
 
@@ -135,28 +136,8 @@ public partial class MainNodeNeural : Node3D
     private readonly Random _pulseRng = new(7);
     private double _lastSeedTime = double.NegativeInfinity;
     private double _lastPulseSetAt = double.NegativeInfinity;
-    private ParamValueRef _panState = new();
+    private ParamValue? _panState = new();
     private double _lastClock;
-
-    /// <summary>
-    /// Minimal ParamValue wrapper — same idea as spike's MainNode3D. Kept
-    /// here as a nested class so the neural scene has zero coupling to
-    /// NeuroViz.Core.Ipc except for the payload types.
-    /// </summary>
-    private sealed class ParamValueRef
-    {
-        public NeuroViz.Core.Ipc.ParamValue? Value { get; init; }
-
-        public float EvaluateAt(double nowSeconds)
-        {
-            if (Value is null) return 0f;
-            if (Value.DecayMs <= 0) return Value.Value;
-            var age = nowSeconds - Value.SetAtSeconds;
-            if (age < 0) return 0f;
-            var k = (float)System.Math.Exp(-age / (Value.DecayMs / 1000.0));
-            return Value.Value * k;
-        }
-    }
 
     // N.7-fix3 (B1): in-memory snapshot history for seek-restore and
     // deterministic replay. Persistence in .nvproj (B2) deferred.
@@ -618,15 +599,15 @@ public partial class MainNodeNeural : Node3D
             }
 
             if (frame.Params.TryGetValue("pan_x", out var px))
-                _panState = new ParamValueRef { Value = px };
+                _panState = px;
 
             // N.4 event params
             if (frame.Params.TryGetValue("shiver", out var sv))
-                _shiverState = new ParamValueRef { Value = sv };
+                _shiverState = sv;
             if (frame.Params.TryGetValue("cortex_flash", out var cf))
-                _cortexFlashState = new ParamValueRef { Value = cf };
+                _cortexFlashState = cf;
             if (frame.Params.TryGetValue("pitch_height", out var ph))
-                _pitchState = new ParamValueRef { Value = ph };
+                _pitchState = ph;
             if (frame.Params.TryGetValue("release", out var rel))
             {
                 if (rel.SetAtSeconds > _lastReleaseSetAt + 0.001)
@@ -736,9 +717,9 @@ public partial class MainNodeNeural : Node3D
         }
 
         // Event states.
-        float shiver = _shiverState.EvaluateAt(nowClock);
-        float flash = _cortexFlashState.EvaluateAt(nowClock);
-        float pitch = _pitchState.EvaluateAt(nowClock);
+        float shiver = _shiverState?.EvaluateAt(nowClock) ?? 0f;
+        float flash = _cortexFlashState?.EvaluateAt(nowClock) ?? 0f;
+        float pitch = _pitchState?.EvaluateAt(nowClock) ?? 0f;
         // N.4-fix: release wave. Per-node pulse propagates from the structure
         // centre outward. Nonuniformity (some nodes arrive early, some late)
         // is driven by (1 - harmonicity): clean tonal material → ordered front
@@ -859,7 +840,7 @@ public partial class MainNodeNeural : Node3D
         if (eventTime - _lastSeedTime < 0.05) return;
         _lastSeedTime = eventTime;
 
-        float panX = _panState.EvaluateAt(eventTime);
+        float panX = _panState?.EvaluateAt(eventTime) ?? 0f;
         float leftProb = (1f - panX) * 0.5f;
         int seedCount = _pulseRng.Next(1, 4);   // 1..3
 
