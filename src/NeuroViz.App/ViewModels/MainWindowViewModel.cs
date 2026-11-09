@@ -530,6 +530,20 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             StatusText = $"Rules reload failed: {_rulesHolder.LastError}";
     }
 
+    /// <summary>
+    /// Called by the view after Settings are saved and RulesPath changed.
+    /// The active rule engine is untouched (still functional until the
+    /// user reloads), but SourcePath is cleared so the next ReloadRules
+    /// falls back to ResolveRulesPath() — which reads the freshly-saved
+    /// Settings.RulesPath. Without this, ReloadRules uses the stale
+    /// SourcePath and reloads the previous file.
+    /// </summary>
+    public void OnRulesPathChanged()
+    {
+        _rulesHolder.ClearSourcePath();
+        StatusText = "Settings saved. Rules path changed — click Reload Rules to apply.";
+    }
+
     [RelayCommand]
     private async Task CopyDebugTableAsync()
     {

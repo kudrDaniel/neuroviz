@@ -94,7 +94,7 @@ public partial class MainWindow : Window
         }
 
         if (!string.Equals(ViewModel.Settings.RulesPath, oldRulesPath, StringComparison.Ordinal))
-            ViewModel.StatusText = "Settings saved. Rules path changed — click Reload Rules to apply.";
+            ViewModel.OnRulesPathChanged();
         else if (string.Equals(ViewModel.Settings.VisualizerScene, oldScene, StringComparison.Ordinal))
             ViewModel.StatusText = "Settings saved.";
     }

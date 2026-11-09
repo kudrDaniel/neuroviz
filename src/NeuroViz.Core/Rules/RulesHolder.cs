@@ -31,6 +31,15 @@ public sealed class RulesHolder
     public string? LastError { get; private set; }
 
     /// <summary>
+    /// Clear the cached source path without touching the current document
+    /// or engine. Used when the caller knows the "current rules path" has
+    /// been redefined elsewhere (e.g. the user changed Settings.RulesPath
+    /// and the next Reload should resolve via that new path, not silently
+    /// reload the old one).
+    /// </summary>
+    public void ClearSourcePath() => SourcePath = null;
+
+    /// <summary>
     /// Replaces the active document and rebuilds the engine.
     /// Pass <paramref name="sourcePath"/> = null for project-embedded rules.
     /// </summary>

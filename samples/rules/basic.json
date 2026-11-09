@@ -1,120 +1,119 @@
 {
   "version": 1,
   "rules": [
+    // --- TIERED ONSETS ---
     {
-      "id": "onset-pulse",
+      "id": "onset-weak",
       "priority": 100,
       "when": {
         "event": "onset",
-        "filters": {
-          "confidence": {
-            "min": 0.6
-          }
-        }
+        "filters": { "confidence": { "min": 0.5, "max": 0.75 } }
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "pulse",
-          "value": 1.0,
-          "decayMs": 150
-        }
+        { "type": "set", "param": "pulse", "value": 0.4, "decayMs": 100 }
       ]
     },
+    {
+      "id": "onset-strong",
+      "priority": 110, 
+      "when": {
+        "event": "onset",
+        "filters": { "confidence": { "min": 0.75 } }
+      },
+      "actions": [
+        { "type": "set", "param": "pulse", "value": 1.2, "decayMs": 150 },
+        { "type": "set", "param": "cortex_flash", "value": 0.3, "decayMs": 200 }
+      ]
+    },
+
+    // --- DYNAMIC OFFSETS ---
     {
       "id": "offset-release",
       "priority": 95,
       "when": {
         "event": "offset",
-        "filters": {
-          "confidence": {
-            "min": 0.6
-          }
-        }
+        "filters": { "confidence": { "min": 0.6 } }
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "release",
-          "value": 1.0,
-          "decayMs": 400
-        }
+        // Берем confidence как значение, чтобы сильные затухания сильнее сжимали сферу
+        { "type": "set", "param": "release", "param_from_event": "confidence", "decayMs": 400 }
+      ]
+    },
+
+    // --- NOVELTY (Двухуровневая) ---
+    {
+      "id": "novelty-minor",
+      "priority": 190,
+      "when": {
+        "event": "novelty",
+        "filters": { "params.error_magnitude": { "min": 4.0, "max": 8.0 } }
+      },
+      "actions": [
+        { "type": "set", "param": "shiver", "value": 0.5, "decayMs": 1000 }
       ]
     },
     {
-      "id": "novelty-shiver",
-      "priority": 200,
+      "id": "novelty-major",
+      "priority": 200, 
       "when": {
         "event": "novelty",
-        "filters": {
-          "params.error_magnitude": {
-            "min": 4.0
-          }
-        }
+        "filters": { "params.error_magnitude": { "min": 8.0 } }
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "shiver",
-          "value": 1.0,
-          "decayMs": 1000
-        },
-        {
-          "type": "set",
-          "param": "cortex_flash",
-          "value": 0.6,
-          "decayMs": 400
-        }
+        { "type": "set", "param": "shiver", "value": 1.0, "decayMs": 1500 },
+        { "type": "set", "param": "cortex_flash", "value": 1.0, "decayMs": 500 },
+        { "type": "set", "param": "release", "value": 0.8, "decayMs": 600 } // Сжатие от неожиданности
       ]
     },
+
+    // --- AZIMUTH (Основная панорама) ---
     {
       "id": "azimuth-pan",
       "priority": 90,
-      "when": {
-        "event": "azimuth_estimate"
-      },
+      "when": { "event": "azimuth_estimate" },
       "actions": [
-        {
-          "type": "set",
-          "param": "pan_x",
-          "param_from_event": "azimuth_norm",
-          "decayMs": 100
-        }
+        { "type": "set", "param": "pan_x", "param_from_event": "azimuth_norm", "decayMs": 100 }
       ]
     },
+    // --- AZIMUTH (Крайние значения вызывают напряжение/дрожь) ---
+    {
+      "id": "azimuth-stress",
+      "priority": 91, 
+      "when": {
+        "event": "azimuth_estimate",
+        "filters": { 
+          "params.azimuth_norm": { "min": 0.85 }, // Только правый край
+          "params.rms": { "min": 0.1 } // И только если звук не тихий
+        }
+      },
+      "actions": [
+        { "type": "set", "param": "shiver", "value": 0.2, "decayMs": 300 }
+      ]
+    },
+
+    // --- PITCH (Фильтрация шума + влияние на яркость) ---
     {
       "id": "pitch-brightness",
       "priority": 80,
       "when": {
-        "event": "pitch_salience"
+        "event": "pitch_salience",
+        "filters": { "params.hps_strength": { "min": 5.0 } } // Отсекаем шум
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "pitch_height",
-          "param_from_event": "pitch_norm",
-          "decayMs": 150
-        }
+        { "type": "set", "param": "pitch_height", "param_from_event": "pitch_norm", "decayMs": 150 }
       ]
     },
+
+    // --- STREAM BOUNDARIES ---
     {
       "id": "stream-open",
       "priority": 50,
       "when": {
         "event": "stream_boundary",
-        "filters": {
-          "params.open": {
-            "eq": "1"
-          }
-        }
+        "filters": { "params.open": { "eq": "1" } }
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "stream_glow",
-          "value": 0.8,
-          "decayMs": 1500
-        }
+        { "type": "set", "param": "stream_glow", "value": 0.8, "decayMs": 1500 }
       ]
     },
     {
@@ -122,19 +121,10 @@
       "priority": 45,
       "when": {
         "event": "stream_boundary",
-        "filters": {
-          "params.open": {
-            "eq": "0"
-          }
-        }
+        "filters": { "params.open": { "eq": "0" } }
       },
       "actions": [
-        {
-          "type": "set",
-          "param": "stream_fade",
-          "value": 0.8,
-          "decayMs": 2000
-        }
+        { "type": "set", "param": "stream_fade", "value": 0.8, "decayMs": 2000 }
       ]
     }
   ]
