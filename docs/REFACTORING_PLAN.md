@@ -22,6 +22,251 @@
 
 ---
 
+## 1.3: `IpcClient` как process-level singleton (Bootstrap Scene)
+
+### Проблема (архитектурный диагноз)
+
+Сейчас `IpcClient` создается внутри каждой сцены (`MainNode`, `MainNode3D`, `MainNodeNeural`) в `_Ready` и уничтожается в `_ExitTree`. При `ChangeSceneToFile`:
+
+1. Старая сцена вызывает `_ipc.Dispose()`. Фоновые задачи (`ReadAsync` на named pipes) не завершаются синхронно — ОС освобождает сокеты с задержкой.
+2. Новая сцена создает новый `IpcClient` и пытается подключиться к тем же именам каналов.
+3. Старые сокеты еще держат имена → новый клиент получает `All pipe instances are busy` или timeout.
+4. Ретрай через `Task.Delay(1000)` маскирует проблему, но не решает: на разных ОС/нагрузках тайминги снова ломаются.
+
+**Корневая причина:** `IpcClient` привязан к жизненному циклу сцены. Смена сцены — событие визуальное, оно не должно влиять на транспортный слой.
+
+### Решение
+
+`IpcClient` живет на уровне процесса Godot. Создается один раз при старте, уничтожается при закрытии. Сцены — только **потребители** (subscribe/unsubscribe к событиям). `ChangeSceneToFile` меняет только `CurrentScene`, IPC-слой не замечает смены.
+
+### Архитектура
+
+```
+Godot Process
+├── /root (Window)
+│   ├── IpcBootstrapHolder         ← persistent (added manually to /root)
+│   │   └── IpcClient               ← one per process, lives here
+│   │       ├── Control pipe
+│   │       ├── EventStream pipe
+│   │       ├── AudioClock MMF
+│   │       └── Preview pipe
+│   │
+│   └── CurrentScene               ← changes via ChangeSceneToFile
+│       └── MainNodeNeural / MainNode3D / MainNode
+│           └── gets IpcClient via IpcBootstrapHolder.Client
+│           └── subscribes to VisualConfigReceived etc.
+│           └── polls frame via Ipc.GetLatestFrame()
+```
+
+**Ключевое:** `IpcBootstrapHolder` — прямой child `Root`, не `CurrentScene`. `ChangeSceneToFile` уничтожает только `CurrentScene`, не `Root` children. Значит holder переживает смену сцены.
+
+### Компоненты
+
+#### 1. `bootstrap.tscn` (main_scene)
+
+Один Node с `Bootstrap.cs`. Эфемерный — существует один кадр.
+
+```
+project.godot:
+  [application]
+  run/main_scene="res://bootstrap.tscn"
+```
+
+#### 2. `Bootstrap.cs : Node`
+
+```csharp
+public override void _Ready()
+{
+    // 1. Прочитать конфиг из командной строки (--nv-scene, --nv-nodes, ...)
+    NeuralSceneConfig.InitializeFromCommandLine();
+
+    // 2. Создать persistent holder и добавить в Root
+    var holder = new IpcBootstrapHolder();
+    GetTree().Root.AddChild(holder);
+
+    // 3. Определить целевую сцену
+    var target = NeuralSceneConfig.InitialScene; // "neural" / "spike" / "2d"
+    var path = target switch
+    {
+        "2d" => "res://node_2d.tscn",
+        "spike" => "res://spike.tscn",
+        _ => "res://neural.tscn",
+    };
+
+    // 4. Загрузить целевую сцену
+    GetTree().ChangeSceneToFile(path);
+    // Bootstrap умирает в конце кадра, holder остается жить
+}
+```
+
+#### 3. `IpcBootstrapHolder.cs : Node`
+
+```csharp
+public partial class IpcBootstrapHolder : Node
+{
+    private static IpcBootstrapHolder? _instance;
+    private IpcClient _client = null!;
+
+    public static IpcClient Client =>
+        _instance?._client
+        ?? throw new InvalidOperationException(
+            "IpcBootstrapHolder not initialized. " +
+            "Check that bootstrap.tscn is the main scene.");
+
+    public override void _Ready()
+    {
+        _instance = this;
+        _client = new IpcClient();
+        _client.Start();
+        GD.Print("[Bootstrap] IpcClient started (process-lifetime).");
+    }
+
+    public override void _Process(double delta)
+    {
+        // Единственное место, где обрабатывается PendingScenePath
+        if (_client.PendingScenePath is { } path)
+        {
+            _client.ClearPendingScene();
+            var current = GetTree().CurrentScene?.SceneFilePath;
+            if (!string.Equals(current, path, StringComparison.OrdinalIgnoreCase))
+            {
+                GD.Print($"[Bootstrap] Scene switch: {current} → {path}");
+                GetTree().ChangeSceneToFile(path);
+            }
+        }
+    }
+
+    public override void _ExitTree()
+    {
+        // Вызывается один раз — при закрытии приложения
+        GD.Print("[Bootstrap] Shutting down IpcClient.");
+        _client?.Dispose();
+        _instance = null;
+    }
+}
+```
+
+#### 4. `VisualizerBase3D.cs` / `VisualizerBase2D.cs` (изменения)
+
+**Убираем:** создание `IpcClient`, `_ipc.Start()`, `_ipc.Dispose()`.
+**Убираем:** проверку `PendingScenePath` (теперь в holder).
+**Добавляем:** `protected IpcClient Ipc { get; private set; }` — берет из holder.
+
+```csharp
+public abstract partial class VisualizerBase3D : Node3D
+{
+    protected IpcClient Ipc { get; private set; } = null!;
+    private bool _previewFirstCaptureLogged;
+
+    public override void _Ready()
+    {
+        Ipc = IpcBootstrapHolder.Client;
+        _ReadyVisualizer();
+    }
+
+    public override void _Process(double delta)
+    {
+        _Ipc.DrainMainThreadActions();
+        _ProcessVisualizer(delta);
+
+        if (Ipc.ShouldCapturePreview(Time.GetTicksMsec() / 1000.0))
+            CapturePreviewAfterDraw();
+    }
+
+    protected abstract void _ReadyVisualizer();
+    protected abstract void _ProcessVisualizer(double delta);
+
+    private async void CapturePreviewAfterDraw() { /* без изменений, использует Ipc */ }
+
+    // НЕТ _ExitTree override для Ipc — сцена не владеет клиентом.
+}
+```
+
+#### 5. `MainNodeNeural.cs` / `MainNode3D.cs` / `MainNode.cs` (изменения)
+
+**Убираем:** всё, что связано с созданием и dispose `IpcClient`.
+**Меняем:** везде `_ipc` → `Ipc` (protected свойство базового класса).
+**Оставляем:** `_ExitTree` только если есть подписки на события (отписаться от `VisualConfigReceived`), но **не трогать `Ipc.Dispose()`**.
+
+Пример:
+```csharp
+// Было:
+public override void _ExitTree()
+{
+    _ipc.VisualConfigReceived -= OnVisualConfigReceived;
+    _ipc.Dispose();   // ← удалить
+}
+
+// Стало:
+public override void _ExitTree()
+{
+    Ipc.VisualConfigReceived -= OnVisualConfigReceived;
+    // Dispose делает IpcBootstrapHolder при закрытии приложения.
+}
+```
+
+### Что решается по конструкции
+
+| Баг | Было | Стало |
+|---|---|---|
+| `All pipe instances are busy` при смене сцены | Ретраи + тайминги | Каналы не переподключаются |
+| Зависание App при закрытии | `Task.WaitAll` и orphaned tasks | Один Dispose, один канал |
+| `PendingScenePath` race | Каждая сцена проверяет | Единственный holder проверяет |
+| Preview gap при смене сцены | Возможен | Непрерывный стрим (клиент не прерывается) |
+| `maxInstances > 1` как костыль | Применяли | Не нужен, возвращаем `1` |
+
+### Что НЕ меняется
+
+- Внутренности `IpcClient` (все методы, события, каналы) — как есть.
+- Логика визуализации (волны, спайки, реструктуризация) — как есть.
+- Логика App-стороны (`IpcServer`) — как есть.
+- Формат `.nvproj`, IPC-протокол — как есть.
+- `NeuralSceneConfig`, `PendingScenePath` — те же свойства, но читаются в другом месте.
+
+### Файлы, которые затрагиваем
+
+**Новые:**
+- `src/NeuroViz.Visualizer/bootstrap.tscn`
+- `src/NeuroViz.Visualizer/Scripts/Bootstrap.cs`
+- `src/NeuroViz.Visualizer/Scripts/IpcBootstrapHolder.cs`
+
+**Изменяемые:**
+- `src/NeuroViz.Visualizer/project.godot` — `run/main_scene` → `bootstrap.tscn`
+- `src/NeuroViz.Visualizer/Scripts/VisualizerBase3D.cs` — получает Ipc из holder, убирает владение
+- `src/NeuroViz.Visualizer/Scripts/VisualizerBase2D.cs` — то же
+- `src/NeuroViz.Visualizer/Scripts/MainNodeNeural.cs` — `_ipc` → `Ipc`, убрать `Dispose`
+- `src/NeuroViz.Visualizer/Scripts/MainNode3D.cs` — то же
+- `src/NeuroViz.Visualizer/Scripts/MainNode.cs` — то же
+- `src/NeuroViz.Visualizer/Scripts/NeuralSceneConfig.cs` — добавить `InitialScene` поле, парсить `--nv-scene`
+
+**Откат:**
+- `src/NeuroViz.App/Ipc/IpcServer.cs` — `maxInstances` обратно `5` → `1` (не нужен, race исчезает)
+
+### Порядок коммитов
+
+1. **Commit 1:** `refactor(visualizer): bootstrap scene + IpcBootstrapHolder` — новые файлы, `project.godot` правка. Старый `VisualizerBase` пока не тронут — оба механизма (старый и новый) сосуществуют.
+2. **Commit 2:** `refactor(visualizer): migrate scenes to IpcBootstrapHolder` — `VisualizerBase3D/2D`, `MainNode*` — убираем `_ipc` ownership, используем `Ipc` из holder.
+3. **Commit 3:** `refactor(visualizer): remove legacy IpcClient ownership from scenes` — финальная чистка, удаление `PendingScenePath` checks из базовых классов.
+
+Каждый коммит — рабочее состояние.
+
+### Тестирование
+
+**Обязательные сценарии (ручной прогон):**
+1. Launch Visualizer → сцена Neural → переключение на Spike → 2D → Neural. Повторить 20 раз. Ни одной ошибки, ни одного таймаута, ни одного зависания.
+2. Закрыть App во время работы любой сцены. Godot завершается чисто (нет висящих процессов в диспетчере задач).
+3. Логи: `[Bootstrap] IpcClient started` — **один раз** за весь process lifetime (не на каждой сцене). `[Bootstrap] Scene switch: X → Y` — на каждом переключении. `[Bootstrap] Shutting down IpcClient` — один раз при закрытии.
+4. Preview в инспекторе **не прерывается** при смене сцены (виден плавный переход на новый визуал).
+5. `--nv-scene=spike` в cmdline при холодном старте: Godot запускается сразу на Spike, не на Neural.
+6. Переключение сцен через Settings UI (ComboBox) — работает мгновенно, без ожидания.
+
+**Регрессионные проверки:**
+- Wave, cascade, restructure в Neural — работают как раньше.
+- Спайки, частицы в Spike — работают.
+- 2D сцена — работает.
+
+---
+
 ## Этап 2: Разгрузка `MainNodeNeural.cs`
 
 ### 2.1 `NeuralMath.cs`
