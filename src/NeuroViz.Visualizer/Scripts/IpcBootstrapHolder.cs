@@ -16,6 +16,7 @@ public partial class IpcBootstrapHolder : Node
     {
         _instance = this;
         _client = new IpcClient();
+        _client.ShutdownRequested += () => GetTree().Quit();
         _client.Start();
         GD.Print("[Bootstrap] IpcClient started (process-lifetime).");
     }

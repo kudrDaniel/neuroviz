@@ -34,6 +34,7 @@ public sealed class IpcServer : IDisposable
 
     private Process? _godotProcess;
     public Process? GodotProcess => _godotProcess;
+    private bool _disposed;
     private long _seq = 0;
     private readonly System.Diagnostics.Stopwatch _sw = System.Diagnostics.Stopwatch.StartNew();
     private volatile bool _eventStreamConnected;
@@ -192,7 +193,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.ControlPipeName, PipeDirection.InOut, 1,
+                    IpcConstants.ControlPipeName, PipeDirection.InOut, 2,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);
@@ -268,7 +269,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 1,
+                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 2,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);
@@ -333,7 +334,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.PreviewPipeName, PipeDirection.In, 1,
+                    IpcConstants.PreviewPipeName, PipeDirection.In, 2,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);
@@ -370,24 +371,41 @@ public sealed class IpcServer : IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel();
+        if (_disposed) return;
+        _disposed = true;
 
-        // Ждем, пока фоновые задачи завершатся и освободят пайпы
+        // 1. Пытаемся вежливо попросить Godot закрыться
+        if (_godotProcess != null && !_godotProcess.HasExited)
+        {
+            try
+            {
+                _controlQueue.Writer.TryWrite(new ControlMessage { Kind = ControlKinds.Shutdown });
+                // Ждем до 500мс, чтобы Godot успел обработать и закрыть себя
+                if (!_godotProcess.WaitForExit(500))
+                {
+                    _godotProcess.Kill(); // Если не успел — убиваем
+                }
+            }
+            catch { }
+            finally
+            {
+                _godotProcess.Dispose();
+            }
+        }
+
+        // 2. Останавливаем фоновые задачи
+        _cts.Cancel();
+        _outgoingFrames.Writer.TryComplete();
+        _controlQueue.Writer.TryComplete();
+
         var tasks = new[] { _controlTask, _eventTask, _previewTask }
             .Where(t => t != null).Cast<Task>().ToArray();
+
         if (tasks.Length > 0)
         {
             try { Task.WaitAll(tasks, 1000); } catch { }
         }
 
-        _outgoingFrames.Writer.TryComplete();
-        _controlQueue.Writer.TryComplete();
-
-        if (_godotProcess != null && !_godotProcess.HasExited)
-        {
-            try { _godotProcess.Kill(); } catch { }
-            _godotProcess.Dispose();
-        }
         _cts.Dispose();
     }
 

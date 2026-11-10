@@ -28,6 +28,7 @@ public sealed class IpcClient : IDisposable
     private double _lastPreviewCaptureSeconds = -1.0;
     private volatile bool _previewConnected;
     private readonly CancellationTokenSource _cts = new();
+    public event Action? ShutdownRequested;
     private NamedPipeClientStream? _controlPipe;
     private NamedPipeClientStream? _eventPipe;
     private NamedPipeClientStream? _previewPipe;
@@ -224,6 +225,9 @@ public sealed class IpcClient : IDisposable
                 // pending path; each scene's _Process will pick it up on main thread.
                 PendingScenePath = path;
                 break;
+            case ControlKinds.Shutdown:
+                ShutdownRequested?.Invoke();
+                break;
             case "":
                 // Heartbeat from App (N.9-fix2). Ignore silently — not an
                 // unknown kind, not an error.
@@ -377,19 +381,12 @@ public sealed class IpcClient : IDisposable
         if (_cts.IsCancellationRequested) return;
         _cts.Cancel();
 
-        // ПРИНУДИТЕЛЬНО закрываем сокеты. Это мгновенно прервет любые
-        // висящие ReadAsync/WriteAsync и освободит хэндлы ОС.
+        // Принудительно закрываем сокеты, чтобы фоновые задачи моментально упали
         try { _controlPipe?.Dispose(); } catch { }
         try { _eventPipe?.Dispose(); } catch { }
         try { _previewPipe?.Dispose(); } catch { }
 
-        var tasks = new[] { _controlTask, _eventTask, _clockTask, _previewTask }
-            .Where(t => t != null).Cast<Task>().ToArray();
-
-        if (tasks.Length > 0)
-        {
-            try { Task.WaitAll(tasks, 500); } catch { }
-        }
+        // Task.WaitAll убран, чтобы не вешать главный поток Godot при закрытии
 
         Volatile.Read(ref _mmfView)?.Dispose();
         _mmf?.Dispose();
