@@ -1,9 +1,8 @@
 using Godot;
 using NeuroViz.Visualizer.Scripts;
 
-public partial class MainNode3D : Node3D
+public partial class MainNode3D : VisualizerBase3D
 {
-    private IpcClient _ipc = null!;
     private MeshInstance3D _sphere = null!;
     private ShaderMaterial _material = null!;
     private Label _fpsLabel = null!;
@@ -45,8 +44,9 @@ public partial class MainNode3D : Node3D
 
     private bool _previewFirstCaptureLogged;
 
-    public override void _Ready()
+    protected override void _ReadyVisualizer()
     {
+        NeuralSceneConfig.InitializeFromCommandLine();
         // ── Sphere ─────────────────────────────────────────────────
         // Higher resolution than spike (was 64x32 = 2048 verts) — needed
         // so vertex-level noise reads as smooth curvature, not facets.
@@ -120,37 +120,11 @@ public partial class MainNode3D : Node3D
 
         SetupAmbientParticles();
         SetupBurstParticles();
-
-        _ipc = new IpcClient();
-        _ipc.Start();
         _ipc.VisualConfigReceived += OnVisualConfigReceived;
     }
 
-    public override void _Process(double delta)
+    protected override void _ProcessVisualizer(double delta)
     {
-        _ipc.DrainMainThreadActions();
-
-        if (_ipc.PendingScenePath is { } pendingPath)
-        {
-            _ipc.ClearPendingScene();
-            // N.9-fix2: skip reload if the current scene already matches.
-            // ChangeSceneToFile on the same path fully reloads — the old
-            // scene's IpcClient disposes (pipes close), the new scene's
-            // IpcClient connects immediately, and the App's server may still
-            // hold the previous connection's single-instance slot
-            // (NamedPipeServerStream.IsConnected stays true on Windows until
-            // a write actually fails). Result: new client times out, scene
-            // freezes on "Waiting...". Guard against it here — a redundant
-            // reload is never useful.
-            var current = GetTree().CurrentScene?.SceneFilePath;
-            if (!string.Equals(current, pendingPath, StringComparison.OrdinalIgnoreCase))
-            {
-                GetTree().ChangeSceneToFile(pendingPath);
-                return;
-            }
-            // Same scene — fall through to normal _Process.
-        }
-
         if (!_ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
@@ -272,36 +246,6 @@ public partial class MainNode3D : Node3D
             $"cam: x={_camera.Position.X:F2} y={_camera.Position.Y:F2} z={_camera.Position.Z:F2}";
 
         UpdateIdleCamera();
-
-        double now = Time.GetTicksMsec() / 1000.0;
-        if (_ipc.ShouldCapturePreview(now))
-            CapturePreviewAfterDraw();
-    }
-
-    private async void CapturePreviewAfterDraw()
-    {
-        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
-
-        var img = GetViewport().GetTexture().GetImage();
-        if (img == null || img.IsEmpty()) return;
-
-        if (!_previewFirstCaptureLogged)
-        {
-            _previewFirstCaptureLogged = true;
-            int nonBlack = 0;
-            for (int y = 0; y < img.GetHeight(); y += 32)
-                for (int x = 0; x < img.GetWidth(); x += 32)
-                {
-                    var c = img.GetPixel(x, y);
-                    if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
-                }
-            GD.Print($"[Preview] First capture {img.GetWidth()}x{img.GetHeight()}, non-black: {nonBlack}");
-        }
-
-        img.Resize(320, 180, Image.Interpolation.Bilinear);
-        _ipc.QueuePreview(img);
-        img.Dispose();
     }
 
     private void SetupAmbientParticles()
@@ -509,7 +453,7 @@ public partial class MainNode3D : Node3D
     public override void _ExitTree()
     {
         _ipc.VisualConfigReceived -= OnVisualConfigReceived;
-        _ipc.Dispose();
+        base.Dispose();
     }
 
     // ── Pulse state helper ──────────────────────────────────────────

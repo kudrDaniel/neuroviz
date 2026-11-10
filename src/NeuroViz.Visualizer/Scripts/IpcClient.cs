@@ -28,6 +28,13 @@ public sealed class IpcClient : IDisposable
     private double _lastPreviewCaptureSeconds = -1.0;
     private volatile bool _previewConnected;
     private readonly CancellationTokenSource _cts = new();
+    private NamedPipeClientStream? _controlPipe;
+    private NamedPipeClientStream? _eventPipe;
+    private NamedPipeClientStream? _previewPipe;
+    private Task? _controlTask;
+    private Task? _eventTask;
+    private Task? _clockTask;
+    private Task? _previewTask;
     private MemoryMappedFile? _mmf;
     private MemoryMappedViewAccessor? _mmfView;   // доступ только через Volatile.Read/Write
     private long _lastSeq = -1;
@@ -52,10 +59,10 @@ public sealed class IpcClient : IDisposable
 
     public void Start()
     {
-        _ = Task.Run(ConnectControlPipeAsync);
-        _ = Task.Run(ListenEventStreamAsync);
-        _ = Task.Run(OpenAudioClockAsync);
-        _ = Task.Run(ServePreviewPipeAsync);
+        _controlTask = Task.Run(ConnectControlPipeAsync);
+        _eventTask = Task.Run(ListenEventStreamAsync);
+        _clockTask = Task.Run(OpenAudioClockAsync);
+        _previewTask = Task.Run(ServePreviewPipeAsync);
     }
 
     /// <summary>
@@ -133,52 +140,37 @@ public sealed class IpcClient : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeClientStream(
-                    ".", IpcConstants.ControlPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                Log("CONTROL", "Connecting to server...");
+                _controlPipe = new NamedPipeClientStream(".", IpcConstants.ControlPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                using var pipe = _controlPipe;
                 await pipe.ConnectAsync(2000, _cts.Token);
+                Log("CONTROL", "CONNECTED.");
 
-                var hello = new ControlMessage
-                {
-                    Kind = ControlKinds.Hello,
-                    Payload = MessagePackSerializer.Serialize(
-                        new HelloPayload
-                        {
-                            ProtocolVersion = IpcConstants.ProtocolVersion,
-                            Role = "visualizer",
-                        },
-                        MessagePackOptions.Default),
-                };
-                await PipeProtocol.WriteFrameAsync(
-                    pipe, MessagePackSerializer.Serialize(hello, MessagePackOptions.Default), _cts.Token);
+                var hello = new ControlMessage { Kind = ControlKinds.Hello, Payload = MessagePackSerializer.Serialize(new HelloPayload { ProtocolVersion = IpcConstants.ProtocolVersion, Role = "visualizer" }, MessagePackOptions.Default) };
+                await PipeProtocol.WriteFrameAsync(pipe, MessagePackSerializer.Serialize(hello, MessagePackOptions.Default), _cts.Token);
 
                 var ackBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                if (ackBytes == null) continue; // server closed before ack
-                var ack = MessagePackSerializer.Deserialize<ControlMessage>(
-                    ackBytes, MessagePackOptions.Default);
-                if (ack.Kind != ControlKinds.HelloAck) continue;
+                if (ackBytes == null) { Log("CONTROL", "Server disconnected before ack."); continue; }
 
                 IsConnected = true;
-                GD.Print("[IPC] Control pipe handshake OK, entering read loop.");
+                Log("CONTROL", "Handshake OK. Entering read loop.");
 
-                // P2-B: long-lived read loop. Server sends SetWindowMode /
-                // SetAlwaysOnTop and any future command kinds here.
                 while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
                     var cmdBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                    if (cmdBytes == null) break;   // server closed pipe
-                    var cmd = MessagePackSerializer.Deserialize<ControlMessage>(
-                        cmdBytes, MessagePackOptions.Default);
+                    if (cmdBytes == null) break;
+                    var cmd = MessagePackSerializer.Deserialize<ControlMessage>(cmdBytes, MessagePackOptions.Default);
                     HandleControlMessage(cmd);
                 }
-
                 IsConnected = false;
-                GD.Print("[IPC] Control pipe closed, will reconnect.");
+                Log("CONTROL", "Connection closed.");
             }
-            catch (OperationCanceledException) { /* shutdown */ }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                GD.PrintErr($"[IPC] Control pipe error: {ex.Message}");
-                await Task.Delay(1000, _cts.Token);
+                IsConnected = false;
+                Log("CONTROL", $"ERROR: {ex.Message}");
+                try { await Task.Delay(500, _cts.Token); } catch { break; }
             }
         }
     }
@@ -289,22 +281,26 @@ public sealed class IpcClient : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeClientStream(".", IpcConstants.EventStreamPipeName, PipeDirection.In, PipeOptions.Asynchronous);
+                Log("EVENT", "Connecting to server...");
+                _eventPipe = new NamedPipeClientStream(".", IpcConstants.EventStreamPipeName, PipeDirection.In, PipeOptions.Asynchronous);
+                using var pipe = _eventPipe;
                 await pipe.ConnectAsync(2000, _cts.Token);
-                GD.Print("[IPC] EventStream connected.");
+                Log("EVENT", "CONNECTED.");
 
                 while (!_cts.IsCancellationRequested)
                 {
                     var bytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                    if (bytes == null) break; // Сервер закрыл пайп
+                    if (bytes == null) break;
                     var frame = MessagePackSerializer.Deserialize<EventStreamFrame>(bytes, MessagePackOptions.Default);
-                    _frameQueue.Enqueue(frame);
+                    if (frame.FrameSeq > 0) _frameQueue.Enqueue(frame);
                 }
+                Log("EVENT", "Connection closed.");
             }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                GD.PrintErr($"[IPC] EventStream error: {ex.Message}");
-                await Task.Delay(1000, _cts.Token);
+                Log("EVENT", $"ERROR: {ex.Message}");
+                try { await Task.Delay(500, _cts.Token); } catch { break; }
             }
         }
     }
@@ -315,45 +311,35 @@ public sealed class IpcClient : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeServerStream(
-                    IpcConstants.PreviewPipeName,
-                    PipeDirection.Out, 1, PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
-                await pipe.WaitForConnectionAsync(_cts.Token);
-                GD.Print("[IPC] Preview pipe connected.");
+                Log("PREVIEW", "Connecting to server...");
+                _previewPipe = new NamedPipeClientStream(".", IpcConstants.PreviewPipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+                using var pipe = _previewPipe;
+                await pipe.ConnectAsync(2000, _cts.Token);
+                Log("PREVIEW", "CONNECTED.");
                 _previewConnected = true;
 
-                // Drop any stale frames buffered while disconnected.
                 while (_previewQueue.Reader.TryRead(out _)) { }
 
-                try
+                while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
-                    while (pipe.IsConnected && !_cts.IsCancellationRequested)
+                    if (_previewQueue.Reader.TryRead(out var frame))
                     {
-                        if (_previewQueue.Reader.TryRead(out var frame))
-                        {
-                            var bytes = MessagePackSerializer.Serialize(
-                                frame, MessagePackOptions.Default);
-                            await PipeProtocol.WriteFrameAsync(pipe, bytes, _cts.Token);
-                        }
-                        else
-                        {
-                            await Task.Delay(20, _cts.Token);   // 50 Hz drain
-                        }
+                        await PipeProtocol.WriteFrameAsync(pipe, MessagePackSerializer.Serialize(frame, MessagePackOptions.Default), _cts.Token);
+                    }
+                    else
+                    {
+                        await Task.Delay(20, _cts.Token);
                     }
                 }
-                finally
-                {
-                    _previewConnected = false;
-                }
-                GD.Print("[IPC] Preview pipe closed, waiting for reconnect.");
+                _previewConnected = false;
+                Log("PREVIEW", "Connection closed.");
             }
-            catch (OperationCanceledException) { /* shutdown */ }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _previewConnected = false;
-                GD.PrintErr($"[IPC] Preview pipe error: {ex.Message}");
-                try { await Task.Delay(1000, _cts.Token); } catch { }
+                Log("PREVIEW", $"ERROR: {ex.Message}");
+                try { await Task.Delay(500, _cts.Token); } catch { break; }
             }
         }
     }
@@ -386,9 +372,30 @@ public sealed class IpcClient : IDisposable
 
     public void Dispose()
     {
+        if (_cts.IsCancellationRequested) return;
         _cts.Cancel();
+
+        // ПРИНУДИТЕЛЬНО закрываем сокеты. Это мгновенно прервет любые
+        // висящие ReadAsync/WriteAsync и освободит хэндлы ОС.
+        try { _controlPipe?.Dispose(); } catch { }
+        try { _eventPipe?.Dispose(); } catch { }
+        try { _previewPipe?.Dispose(); } catch { }
+
+        var tasks = new[] { _controlTask, _eventTask, _clockTask, _previewTask }
+            .Where(t => t != null).Cast<Task>().ToArray();
+
+        if (tasks.Length > 0)
+        {
+            try { Task.WaitAll(tasks, 500); } catch { }
+        }
+
         Volatile.Read(ref _mmfView)?.Dispose();
         _mmf?.Dispose();
         _cts.Dispose();
+    }
+
+    private void Log(string tag, string msg)
+    {
+        GD.Print($"[{Time.GetTicksMsec()}] [GODOT:{tag}] {msg}");
     }
 }

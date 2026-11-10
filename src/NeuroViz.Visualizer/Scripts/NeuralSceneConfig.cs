@@ -26,6 +26,14 @@ public static class NeuralSceneConfig
 
         foreach (var arg in args)
         {
+            if (arg.StartsWith("--nv-ipc-suffix="))
+            {
+                var suffix = arg.Substring(16);
+                NeuroViz.Core.Ipc.IpcConstants.ControlPipeName = $"NeuroViz.Control.{suffix}";
+                NeuroViz.Core.Ipc.IpcConstants.EventStreamPipeName = $"NeuroViz.EventStream.{suffix}";
+                NeuroViz.Core.Ipc.IpcConstants.PreviewPipeName = $"NeuroViz.Preview.{suffix}";
+                NeuroViz.Core.Ipc.IpcConstants.AudioClockMapName = $"NeuroViz.AudioClock.{suffix}";
+            }
             if (arg.StartsWith("--nv-nodes=") && int.TryParse(arg.Substring(11), out int nodes))
                 NodesPerHemisphere = Math.Clamp(nodes, 200, 1500);
             else if (arg.StartsWith("--nv-edges=") && int.TryParse(arg.Substring(11), out int edges))

@@ -2,9 +2,8 @@ using Godot;
 using NeuroViz.Core.Ipc;
 using NeuroViz.Visualizer.Scripts;
 
-public partial class MainNode : Node2D
+public partial class MainNode : VisualizerBase2D
 {
-    private IpcClient _ipc = null!;
     private ColorRect _rect = null!;        // music layer (events + band_energy + flux)
     private ColorRect _vocalRect = null!;   // voice layer (C4, continuous only)
     private ColorRect _contRect = null!;    // B2 acceptance demo
@@ -35,8 +34,9 @@ public partial class MainNode : Node2D
 
     private double _lastClock = 0.0;
 
-    public override void _Ready()
+    protected override void _ReadyVisualizer()
     {
+        NeuralSceneConfig.InitializeFromCommandLine();
         _rect = new ColorRect
         {
             Color = new Color(0.2f, 0.6f, 1.0f),
@@ -70,36 +70,10 @@ public partial class MainNode : Node2D
 
         _statusLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_statusLabel);
-
-        _ipc = new IpcClient();
-        _ipc.Start();
     }
 
-    public override void _Process(double delta)
+    protected override void _ProcessVisualizer(double delta)
     {
-        _ipc.DrainMainThreadActions();
-
-        if (_ipc.PendingScenePath is { } pendingPath)
-        {
-            _ipc.ClearPendingScene();
-            // N.9-fix2: skip reload if the current scene already matches.
-            // ChangeSceneToFile on the same path fully reloads — the old
-            // scene's IpcClient disposes (pipes close), the new scene's
-            // IpcClient connects immediately, and the App's server may still
-            // hold the previous connection's single-instance slot
-            // (NamedPipeServerStream.IsConnected stays true on Windows until
-            // a write actually fails). Result: new client times out, scene
-            // freezes on "Waiting...". Guard against it here — a redundant
-            // reload is never useful.
-            var current = GetTree().CurrentScene?.SceneFilePath;
-            if (!string.Equals(current, pendingPath, StringComparison.OrdinalIgnoreCase))
-            {
-                GetTree().ChangeSceneToFile(pendingPath);
-                return;
-            }
-            // Same scene — fall through to normal _Process.
-        }
-
         if (!_ipc.IsConnected)
         {
             _statusLabel.Text = "Waiting for Avalonia...";
@@ -238,57 +212,10 @@ public partial class MainNode : Node2D
         _contRect.Scale = new Vector2(contScale, contScale);
         _contRect.Color = new Color(1.0f, 0.5f, 0.2f, 0.7f)
             .Lerp(new Color(0.2f, 1.0f, 0.5f, 0.9f), _smoothHarmonicity);
-
-        // P2-A: preview capture (works in 2D too — same rules).
-        double now = Time.GetTicksMsec() / 1000.0;
-        if (_ipc.ShouldCapturePreview(now))
-            CapturePreviewAfterDraw();
-    }
-
-    private bool _previewFirstCaptureLogged;
-
-    private async void CapturePreviewAfterDraw()
-    {
-        // GetTexture().GetImage() called from _Process reads the viewport
-        // before the current frame is drawn by the GPU — in GL compatibility
-        // mode this returns black reliably. Defer to FramePostDraw: by that
-        // signal the GPU has finished writing to the viewport texture and
-        // GetImage() returns real pixels.
-        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-
-        // Window may have been closed while awaiting.
-        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
-
-        var img = GetViewport().GetTexture().GetImage();
-        if (img == null || img.IsEmpty())
-        {
-            GD.PrintErr("[Preview] GetImage returned null/empty");
-            return;
-        }
-
-        // One-shot diagnostic: sample a sparse grid for any non-black pixel.
-        // If this logs non-black=0, capture is broken beyond the timing fix
-        // (likely renderer/driver); tell us and we switch to Forward+.
-        if (!_previewFirstCaptureLogged)
-        {
-            _previewFirstCaptureLogged = true;
-            int nonBlack = 0;
-            for (int y = 0; y < img.GetHeight(); y += 32)
-                for (int x = 0; x < img.GetWidth(); x += 32)
-                {
-                    var c = img.GetPixel(x, y);
-                    if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
-                }
-            GD.Print($"[Preview] First capture {img.GetWidth()}x{img.GetHeight()}, non-black samples: {nonBlack}");
-        }
-
-        img.Resize(320, 180, Image.Interpolation.Bilinear);
-        _ipc.QueuePreview(img);
-        img.Dispose();
     }
 
     public override void _ExitTree()
     {
-        _ipc.Dispose();
+        base.Dispose();
     }
 }

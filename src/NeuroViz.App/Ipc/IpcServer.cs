@@ -44,6 +44,19 @@ public sealed class IpcServer : IDisposable
     /// </summary>
     public event Action<PreviewFrame>? PreviewReceived;
 
+    private Task? _controlTask;
+    private Task? _eventTask;
+    private Task? _previewTask;
+
+    public IpcServer()
+    {
+        var pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+        IpcConstants.ControlPipeName = $"NeuroViz.Control.{pid}";
+        IpcConstants.EventStreamPipeName = $"NeuroViz.EventStream.{pid}";
+        IpcConstants.PreviewPipeName = $"NeuroViz.Preview.{pid}";
+        IpcConstants.AudioClockMapName = $"NeuroViz.AudioClock.{pid}";
+    }
+
     public void LaunchGodot(string godotExePath, string projectPath, SetVisualizerScenePayload config)
     {
         // Defense-in-depth: trailing separator перед закрывающей кавычкой
@@ -83,9 +96,9 @@ public sealed class IpcServer : IDisposable
 
         _godotProcess = proc;
 
-        _ = Task.Run(AcceptControlPipeAsync);
-        _ = Task.Run(AcceptEventStreamAsync);
-        _ = Task.Run(AcceptPreviewAsync);
+        _controlTask = Task.Run(AcceptControlPipeAsync);
+        _eventTask = Task.Run(AcceptEventStreamAsync);
+        _previewTask = Task.Run(AcceptPreviewAsync);
     }
 
     private static void AppendSceneArgs(ProcessStartInfo psi, SetVisualizerScenePayload config)
@@ -93,6 +106,7 @@ public sealed class IpcServer : IDisposable
         // Godot strips everything before "--" and exposes the rest via
         // OS.GetCmdlineUserArgs().
         psi.ArgumentList.Add("--");
+        psi.ArgumentList.Add($"--nv-ipc-suffix={System.Diagnostics.Process.GetCurrentProcess().Id}");
         psi.ArgumentList.Add($"--nv-scene={config.Scene}");
         psi.ArgumentList.Add($"--nv-nodes={config.NeuralNodesPerHemisphere}");
         psi.ArgumentList.Add($"--nv-edges={config.NeuralEdgesPerNode}");
@@ -177,16 +191,34 @@ public sealed class IpcServer : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeServerStream(
-                    IpcConstants.ControlPipeName, PipeDirection.InOut, 1,
+                var pipe = new NamedPipeServerStream(
+                    IpcConstants.ControlPipeName, PipeDirection.InOut, 5, // 5 инстансов дают ОС время на очистку зомби-сокетов
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+
                 await pipe.WaitForConnectionAsync(_cts.Token);
 
+                // Отдаем клиента в изолированный Task и мгновенно возвращаемся в цикл!
+                _ = Task.Run(() => HandleControlClientAsync(pipe));
+            }
+            catch (OperationCanceledException) { break; }
+            catch
+            {
+                try { await Task.Delay(100, _cts.Token); } catch { break; }
+            }
+        }
+    }
+
+    private async Task HandleControlClientAsync(NamedPipeServerStream pipe)
+    {
+        using (pipe)
+        {
+            try
+            {
                 var helloBytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                if (helloBytes == null) continue;
-                var hello = MessagePackSerializer.Deserialize<ControlMessage>(
-                    helloBytes, MessagePackOptions.Default);
-                if (hello.Kind != ControlKinds.Hello) continue;
+                if (helloBytes == null) return;
+
+                var hello = MessagePackSerializer.Deserialize<ControlMessage>(helloBytes, MessagePackOptions.Default);
+                if (hello.Kind != ControlKinds.Hello) return;
 
                 var ack = new ControlMessage
                 {
@@ -195,44 +227,37 @@ public sealed class IpcServer : IDisposable
                         new HelloPayload { ProtocolVersion = IpcConstants.ProtocolVersion },
                         MessagePackOptions.Default),
                 };
-                await PipeProtocol.WriteFrameAsync(
-                    pipe, MessagePackSerializer.Serialize(ack, MessagePackOptions.Default), _cts.Token);
+                await PipeProtocol.WriteFrameAsync(pipe, MessagePackSerializer.Serialize(ack, MessagePackOptions.Default), _cts.Token);
 
                 var lastWriteTime = _sw.Elapsed.TotalSeconds;
 
-                try
+                while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
-                    while (pipe.IsConnected && !_cts.IsCancellationRequested)
+                    if (_controlQueue.Reader.TryRead(out var msg))
                     {
-                        if (_controlQueue.Reader.TryRead(out var msg))
+                        await PipeProtocol.WriteFrameAsync(
+                            pipe,
+                            MessagePackSerializer.Serialize(msg, MessagePackOptions.Default),
+                            _cts.Token);
+                        lastWriteTime = _sw.Elapsed.TotalSeconds;
+                    }
+                    else
+                    {
+                        var elapsed = _sw.Elapsed.TotalSeconds;
+                        if (elapsed - lastWriteTime > 0.5)
                         {
-                            await PipeProtocol.WriteFrameAsync(
-                                pipe,
-                                MessagePackSerializer.Serialize(msg, MessagePackOptions.Default),
-                                _cts.Token);
-                            lastWriteTime = _sw.Elapsed.TotalSeconds;
+                            var heartbeat = MessagePackSerializer.Serialize(
+                                new ControlMessage { Kind = "" },
+                                MessagePackOptions.Default);
+                            await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
+                            lastWriteTime = elapsed;
                         }
-                        else
-                        {
-                            // N.9-fix2: heartbeat (empty Kind = ignored on
-                            // the client — see IpcClient.HandleControlMessage
-                            // which will add a case for empty Kind).
-                            var elapsed = _sw.Elapsed.TotalSeconds;
-                            if (elapsed - lastWriteTime > 0.5)
-                            {
-                                var heartbeat = MessagePackSerializer.Serialize(
-                                    new ControlMessage { Kind = "" },
-                                    MessagePackOptions.Default);
-                                await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
-                                lastWriteTime = elapsed;
-                            }
-                            await Task.Delay(50, _cts.Token);
-                        }
+                        await Task.Delay(50, _cts.Token);
                     }
                 }
-                catch { /* client disconnected — retry */ }
             }
-            catch { /* accept/handshake failed — retry */ }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch (Exception ex) { Debug.WriteLine($"[APP:CONTROL] Client Error: {ex.Message}"); }
         }
     }
 
@@ -242,56 +267,62 @@ public sealed class IpcServer : IDisposable
         {
             try
             {
-                using var pipe = new NamedPipeServerStream(
-                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 1,
+                var pipe = new NamedPipeServerStream(
+                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 5,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+
                 await pipe.WaitForConnectionAsync(_cts.Token);
 
-                while (_outgoingFrames.Reader.TryRead(out _)) { }
+                _ = Task.Run(() => HandleEventStreamClientAsync(pipe));
+            }
+            catch (OperationCanceledException) { break; }
+            catch
+            {
+                try { await Task.Delay(100, _cts.Token); } catch { break; }
+            }
+        }
+    }
+
+    private async Task HandleEventStreamClientAsync(NamedPipeServerStream pipe)
+    {
+        using (pipe)
+        {
+            try
+            {
                 _eventStreamConnected = true;
+                while (_outgoingFrames.Reader.TryRead(out _)) { }
 
                 var lastWriteTime = _sw.Elapsed.TotalSeconds;
 
-                try
+                while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
-                    while (pipe.IsConnected && !_cts.IsCancellationRequested)
+                    if (_outgoingFrames.Reader.TryRead(out var frame))
                     {
-                        if (_outgoingFrames.Reader.TryRead(out var frame))
+                        var bytes = MessagePackSerializer.Serialize(frame, MessagePackOptions.Default);
+                        await PipeProtocol.WriteFrameAsync(pipe, bytes, _cts.Token);
+                        lastWriteTime = _sw.Elapsed.TotalSeconds;
+                    }
+                    else
+                    {
+                        var elapsed = _sw.Elapsed.TotalSeconds;
+                        if (elapsed - lastWriteTime > 0.5)
                         {
-                            var bytes = MessagePackSerializer.Serialize(frame, MessagePackOptions.Default);
-                            await PipeProtocol.WriteFrameAsync(pipe, bytes, _cts.Token);
-                            lastWriteTime = _sw.Elapsed.TotalSeconds;
+                            var heartbeat = MessagePackSerializer.Serialize(
+                                new EventStreamFrame { FrameSeq = -1 },
+                                MessagePackOptions.Default);
+                            await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
+                            lastWriteTime = elapsed;
                         }
-                        else
-                        {
-                            // N.9-fix2: heartbeat. Godot's client may have
-                            // been destroyed via ChangeSceneToFile without
-                            // the App noticing (IsConnected on Windows can
-                            // stay true until a write throws). Without a
-                            // heartbeat, this single-instance slot stays
-                            // occupied, and the new client's ConnectAsync
-                            // times out. Empty FrameSeq=-1 is ignored on
-                            // the client (GetLatestFrame filters by
-                            // FrameSeq > _lastSeq, and -1 is never > -1).
-                            var elapsed = _sw.Elapsed.TotalSeconds;
-                            if (elapsed - lastWriteTime > 0.5)
-                            {
-                                var heartbeat = MessagePackSerializer.Serialize(
-                                    new EventStreamFrame { FrameSeq = -1 },
-                                    MessagePackOptions.Default);
-                                await PipeProtocol.WriteFrameAsync(pipe, heartbeat, _cts.Token);
-                                lastWriteTime = elapsed;
-                            }
-                            await Task.Delay(16, _cts.Token);
-                        }
+                        await Task.Delay(16, _cts.Token);
                     }
                 }
-                finally
-                {
-                    _eventStreamConnected = false;
-                }
             }
-            catch { /* client disconnected mid-write or accept — retry */ }
+            catch (OperationCanceledException) { /* shutdown */ }
+            catch (Exception ex) { Debug.WriteLine($"[APP:EVENT] Client Error: {ex.Message}"); }
+            finally
+            {
+                _eventStreamConnected = false;
+            }
         }
     }
 
@@ -301,45 +332,67 @@ public sealed class IpcServer : IDisposable
         {
             try
             {
-                // Client: Godot is the server for this pipe (reverse of
-                // Control/EventStream). Retry with timeout so App startup
-                // before Godot launch does not park a thread forever.
-                using var pipe = new NamedPipeClientStream(
-                    ".", IpcConstants.PreviewPipeName,
-                    PipeDirection.In, PipeOptions.Asynchronous);
-                await pipe.ConnectAsync(2000, _cts.Token);
-                Debug.WriteLine("[IPC] Preview pipe connected.");
+                var pipe = new NamedPipeServerStream(
+                    IpcConstants.PreviewPipeName, PipeDirection.In, 5,
+                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
+                await pipe.WaitForConnectionAsync(_cts.Token);
+
+                _ = Task.Run(() => HandlePreviewClientAsync(pipe));
+            }
+            catch (OperationCanceledException) { break; }
+            catch
+            {
+                try { await Task.Delay(100, _cts.Token); } catch { break; }
+            }
+        }
+    }
+
+    private async Task HandlePreviewClientAsync(NamedPipeServerStream pipe)
+    {
+        using (pipe)
+        {
+            try
+            {
                 while (pipe.IsConnected && !_cts.IsCancellationRequested)
                 {
                     var bytes = await PipeProtocol.ReadFrameAsync(pipe, _cts.Token);
-                    if (bytes == null) break;   // Godot closed pipe
-                    var frame = MessagePackSerializer.Deserialize<PreviewFrame>(
-                        bytes, MessagePackOptions.Default);
+                    if (bytes == null) break;
+
+                    var frame = MessagePackSerializer.Deserialize<PreviewFrame>(bytes, MessagePackOptions.Default);
                     PreviewReceived?.Invoke(frame);
                 }
             }
             catch (OperationCanceledException) { /* shutdown */ }
-            catch
-            {
-                // Godot not running yet, or restarting — retry at 1 Hz.
-                try { await Task.Delay(1000, _cts.Token); } catch { }
-            }
+            catch (Exception ex) { Debug.WriteLine($"[APP:PREVIEW] Client Error: {ex.Message}"); }
         }
     }
 
     public void Dispose()
     {
         _cts.Cancel();
+
+        // Ждем, пока фоновые задачи завершатся и освободят пайпы
+        var tasks = new[] { _controlTask, _eventTask, _previewTask }
+            .Where(t => t != null).Cast<Task>().ToArray();
+        if (tasks.Length > 0)
+        {
+            try { Task.WaitAll(tasks, 1000); } catch { }
+        }
+
         _outgoingFrames.Writer.TryComplete();
         _controlQueue.Writer.TryComplete();
 
         if (_godotProcess != null && !_godotProcess.HasExited)
         {
-            try { _godotProcess.Kill(); } catch { /* already dead */ }
+            try { _godotProcess.Kill(); } catch { }
             _godotProcess.Dispose();
         }
-
         _cts.Dispose();
+    }
+
+    private static void Log(string tag, string msg)
+    {
+        Debug.WriteLine($"[{DateTime.Now:mm:ss.fff}] [APP:{tag}] {msg}");
     }
 }

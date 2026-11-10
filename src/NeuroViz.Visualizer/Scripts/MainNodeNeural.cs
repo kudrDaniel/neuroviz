@@ -9,9 +9,8 @@ namespace NeuroViz.Visualizer.Scripts;
 /// No activation yet (N.3). Palette is layer-coded cold blue; N.4 will
 /// replace with an activation-driven shader.
 /// </summary>
-public partial class MainNodeNeural : Node3D
+public partial class MainNodeNeural : VisualizerBase3D
 {
-    private IpcClient _ipc = null!;
     private NeuralTopology _topology = null!;
     private MultiMesh _nodeMultimesh = null!;
     private Node3D _sceneRoot = null!;
@@ -171,7 +170,7 @@ public partial class MainNodeNeural : Node3D
     // double-restructure on top of the post-state.
     private double _lastRestoreTimestamp = double.NegativeInfinity;
 
-    public override void _Ready()
+    protected override void _ReadyVisualizer()
     {
         // N.10-fix12: Read topology config from command line before doing
         // anything. This ensures Generate() uses the user's settings even
@@ -179,10 +178,10 @@ public partial class MainNodeNeural : Node3D
         NeuralSceneConfig.InitializeFromCommandLine();
 
         _topology = NeuralTopology.Generate(
-    nodesPerHemisphere: NeuralSceneConfig.NodesPerHemisphere,
-    edgesPerNode: NeuralSceneConfig.EdgesPerNode,
-    ccDensity: NeuralSceneConfig.CCDensity,
-    seed: 42);
+            nodesPerHemisphere: NeuralSceneConfig.NodesPerHemisphere,
+            edgesPerNode: NeuralSceneConfig.EdgesPerNode,
+            ccDensity: NeuralSceneConfig.CCDensity,
+            seed: 42);
 
         int cc = _topology.Edges.Count(e => e.IsCrossCallosum);
         GD.Print($"[Neural] Generated: {_topology.Nodes.Count} nodes, " +
@@ -252,9 +251,7 @@ public partial class MainNodeNeural : Node3D
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
 
-        _ipc = new IpcClient();
         _ipc.VisualConfigReceived += OnVisualConfigReceived;
-        _ipc.Start();
 
         // B1: initial snapshot — state before any restructure. Seek to any
         // position before the first stream_boundary restores to this.
@@ -549,32 +546,9 @@ public partial class MainNodeNeural : Node3D
         _ => new Color(0.90f, 0.24f, 0.24f, 0.85f),
     };
 
-    public override void _Process(double delta)
+    protected override void _ProcessVisualizer(double delta)
     {
-        _ipc.DrainMainThreadActions();
-
         _visualTime += delta;
-
-        if (_ipc.PendingScenePath is { } pendingPath)
-        {
-            _ipc.ClearPendingScene();
-            // N.9-fix2: skip reload if the current scene already matches.
-            // ChangeSceneToFile on the same path fully reloads — the old
-            // scene's IpcClient disposes (pipes close), the new scene's
-            // IpcClient connects immediately, and the App's server may still
-            // hold the previous connection's single-instance slot
-            // (NamedPipeServerStream.IsConnected stays true on Windows until
-            // a write actually fails). Result: new client times out, scene
-            // freezes on "Waiting...". Guard against it here — a redundant
-            // reload is never useful.
-            var current = GetTree().CurrentScene?.SceneFilePath;
-            if (!string.Equals(current, pendingPath, StringComparison.OrdinalIgnoreCase))
-            {
-                GetTree().ChangeSceneToFile(pendingPath);
-                return;
-            }
-            // Same scene — fall through to normal _Process.
-        }
 
         if (!_ipc.IsConnected)
         {
@@ -792,14 +766,6 @@ public partial class MainNodeNeural : Node3D
             $"vad: {_smoothVad:F2} | smr: {_smoothSmr:F2}";
 
         UpdateIdleCamera();
-
-        // P2-A preview capture — was missing in neural (added in N.9-fix3).
-        // ShouldCapturePreview gates on IsPreviewConnected AND 200 ms since
-        // last capture, so this is a no-op when the inspector is not listening
-        // or during rapid scene transitions.
-        double previewNow = Time.GetTicksMsec() / 1000.0;
-        if (_ipc.ShouldCapturePreview(previewNow))
-            CapturePreviewAfterDraw();
     }
 
     private void BuildAdjacency()
@@ -1030,37 +996,6 @@ public partial class MainNodeNeural : Node3D
             center.Y + yOffset,
             center.Z + Mathf.Sin(angle) * orbitRadius);
         _camera.LookAt(center);
-    }
-
-    private async void CapturePreviewAfterDraw()
-    {
-        // Defer to FramePostDraw — in GL compatibility mode, reading the
-        // viewport texture from _Process returns black because the GPU has
-        // not finished writing the current frame yet. Same pattern as
-        // MainNode3D (P2-A).
-        await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
-
-        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
-
-        var img = GetViewport().GetTexture().GetImage();
-        if (img == null || img.IsEmpty()) return;
-
-        if (!_previewFirstCaptureLogged)
-        {
-            _previewFirstCaptureLogged = true;
-            int nonBlack = 0;
-            for (int y = 0; y < img.GetHeight(); y += 32)
-                for (int x = 0; x < img.GetWidth(); x += 32)
-                {
-                    var c = img.GetPixel(x, y);
-                    if (c.R > 0.02f || c.G > 0.02f || c.B > 0.02f) nonBlack++;
-                }
-            GD.Print($"[Preview] Neural first capture {img.GetWidth()}x{img.GetHeight()}, non-black: {nonBlack}");
-        }
-
-        img.Resize(320, 180, Image.Interpolation.Bilinear);
-        _ipc.QueuePreview(img);
-        img.Dispose();
     }
 
     private static bool IsFinite(Vector3 v)
@@ -1786,6 +1721,6 @@ public partial class MainNodeNeural : Node3D
     public override void _ExitTree()
     {
         _ipc.VisualConfigReceived -= OnVisualConfigReceived;
-        _ipc.Dispose();
+        base._ExitTree();
     }
 }
