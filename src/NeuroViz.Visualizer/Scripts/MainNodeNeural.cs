@@ -53,6 +53,7 @@ public partial class MainNodeNeural : VisualizerBase3D
     private float[] _nodeDistNorm = null!;
     private Vector3[] _nodeBasePos = null!;
     private float[] _nodePhase = null!;
+    private bool _phaseInitialized;
     private float _maxNodeDist;
     // N.10-fix9: multiple overlapping release waves. Previous impl had
     // three scalars — a new release overwrote the current wave, killing
@@ -100,7 +101,7 @@ public partial class MainNodeNeural : VisualizerBase3D
 
     private const float WaveDuration = 0.6f;
     private const float WavePulseDuration = 0.4f;
-    private const float MaxNonuniformity = 0.3f;
+    private const float MaxNonuniformity = 0.10f;
     private const float WaveAmplitude = 0.15f;
     private static readonly Vector3 StructureCenter = new(1.0f, 0, 0);
 
@@ -211,6 +212,7 @@ public partial class MainNodeNeural : VisualizerBase3D
         };
         AddChild(_sceneRoot);
 
+        InitializeNodePhase();
         BuildNodeMesh();
         BuildIntraEdgeMesh();
         BuildCCEdgeMesh();
@@ -221,13 +223,9 @@ public partial class MainNodeNeural : VisualizerBase3D
 
         _activationImage = Image.CreateEmpty(_topology.Nodes.Count, 1, false, Image.Format.Rf);
         _activationTexture = ImageTexture.CreateFromImage(_activationImage);
-        _phaseImage = Image.CreateEmpty(_topology.Nodes.Count, 1, false, Image.Format.Rf);
-        _phaseTexture = ImageTexture.CreateFromImage(_phaseImage);
-        UpdatePhaseTexture();
 
         _edgeMaterial.SetShaderParameter("activation_tex", _activationTexture);
         _edgeMaterial.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
-        _edgeMaterial.SetShaderParameter("phase_tex", _phaseTexture);
 
         foreach (var m in _ccMaterials)
         {
@@ -235,7 +233,6 @@ public partial class MainNodeNeural : VisualizerBase3D
             {
                 m.SetShaderParameter("activation_tex", _activationTexture);
                 m.SetShaderParameter("texture_width", (float)_topology.Nodes.Count);
-                m.SetShaderParameter("phase_tex", _phaseTexture);
             }
         }
 
@@ -316,6 +313,19 @@ public partial class MainNodeNeural : VisualizerBase3D
         AddChild(new WorldEnvironment { Environment = env });
     }
 
+    private void InitializeNodePhase()
+    {
+        if (_phaseInitialized) return;
+
+        int n = _topology.Nodes.Count;
+        _nodePhase = new float[n];
+        for (int i = 0; i < n; i++)
+            _nodePhase[i] = HashPhase(_topology.Nodes[i].Position);
+
+        _phaseInitialized = true;
+        GD.Print($"[Neural] Node phase initialized: {n} nodes (frozen for session)");
+    }
+
     // ── Nodes (MultiMesh, 1 draw call) ─────────────────────────────
     private void BuildNodeMesh()
     {
@@ -394,23 +404,30 @@ public partial class MainNodeNeural : VisualizerBase3D
         var intra = _topology.Edges.Where(e => !e.IsCrossCallosum).ToList();
         var vertices = new Vector3[intra.Count * 2];
         var colors = new Color[intra.Count * 2];
-        var uvs = new Vector2[intra.Count * 2]; // N.10-fix8
+        var uvs = new Vector2[intra.Count * 2];       // (A, B) — для activation
+        var uvs2 = new Vector2[intra.Count * 2];      // (phase, 0) — для wave
 
         for (int i = 0; i < intra.Count; i++)
         {
-            var a = _topology.Nodes[intra[i].A];
-            var b = _topology.Nodes[intra[i].B];
-            vertices[i * 2] = a.Position;
-            vertices[i * 2 + 1] = b.Position;
-            var color = EdgeBaseColor(a.Layer);
+            int a = intra[i].A;
+            int b = intra[i].B;
+            vertices[i * 2] = _topology.Nodes[a].Position;
+            vertices[i * 2 + 1] = _topology.Nodes[b].Position;
+
+            var color = EdgeBaseColor(_topology.Nodes[a].Layer);
             colors[i * 2] = color;
             colors[i * 2 + 1] = color;
-            // Encode node indices in UV for shader sampling
-            uvs[i * 2] = new Vector2(intra[i].A, intra[i].B);
-            uvs[i * 2 + 1] = new Vector2(intra[i].A, intra[i].B);
+
+            uvs[i * 2] = new Vector2(a, b);
+            uvs[i * 2 + 1] = new Vector2(a, b);
+
+            // Per-vertex phase: endpoint A uses phase[A], endpoint B uses phase[B].
+            // Frozen at generation time, stable across restructure.
+            uvs2[i * 2] = new Vector2(_nodePhase[a], 0f);
+            uvs2[i * 2 + 1] = new Vector2(_nodePhase[b], 0f);
         }
 
-        _intraMeshInstance.Mesh = MakeLineMesh(vertices, colors, uvs);
+        _intraMeshInstance.Mesh = MakeLineMesh(vertices, colors, uvs, uvs2);
     }
 
     // ── CC edges (ArrayMesh with quadratic bezier arcs) ────────────
@@ -458,6 +475,7 @@ public partial class MainNodeNeural : VisualizerBase3D
             var vertices = new List<Vector3>(edges.Count * segmentsPerArc * 2);
             var colors = new List<Color>(edges.Count * segmentsPerArc * 2);
             var uvs = new List<Vector2>(edges.Count * segmentsPerArc * 2);
+            var uvs2 = new List<Vector2>(edges.Count * segmentsPerArc * 2);
 
             foreach (var edge in edges)
             {
@@ -465,21 +483,35 @@ public partial class MainNodeNeural : VisualizerBase3D
                 var b = _topology.Nodes[edge.B];
                 var control = CCControlPoint(a.Position, b.Position, a.Layer);
                 var color = CCBaseColor(a.Layer);
+                float phaseA = _nodePhase[edge.A];
+                float phaseB = _nodePhase[edge.B];
 
                 var prev = a.Position;
                 for (int s = 1; s <= segmentsPerArc; s++)
                 {
-                    float t = s / (float)segmentsPerArc;
-                    var curr = BezierQuadratic(a.Position, control, b.Position, t);
+                    float tPrev = (s - 1) / (float)segmentsPerArc;
+                    float tCurr = s / (float)segmentsPerArc;
+                    var curr = BezierQuadratic(a.Position, control, b.Position, tCurr);
+
                     vertices.Add(prev); vertices.Add(curr);
                     colors.Add(color); colors.Add(color);
+
+                    // UV0 unchanged: node index pair for activation lookup.
                     uvs.Add(new Vector2(edge.A, edge.B));
                     uvs.Add(new Vector2(edge.A, edge.B));
+
+                    // UV2: phase interpolated along the arc parameter t. This is
+                    // what makes the arc deform smoothly from node A's wave to
+                    // node B's wave, with no break at either end.
+                    uvs2.Add(new Vector2(Mathf.Lerp(phaseA, phaseB, tPrev), 0f));
+                    uvs2.Add(new Vector2(Mathf.Lerp(phaseA, phaseB, tCurr), 0f));
+
                     prev = curr;
                 }
             }
 
-            _ccMeshInstances[layer].Mesh = MakeLineMesh(vertices.ToArray(), colors.ToArray(), uvs.ToArray());
+            _ccMeshInstances[layer].Mesh = MakeLineMesh(
+                vertices.ToArray(), colors.ToArray(), uvs.ToArray(), uvs2.ToArray());
         }
     }
 
@@ -505,13 +537,15 @@ public partial class MainNodeNeural : VisualizerBase3D
         return u * u * p0 + 2f * u * t * p1 + t * t * p2;
     }
 
-    private static ArrayMesh MakeLineMesh(Vector3[] vertices, Color[] colors, Vector2[] uvs)
+    private static ArrayMesh MakeLineMesh(
+    Vector3[] vertices, Color[] colors, Vector2[] uvs, Vector2[] uvs2)
     {
         var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = vertices;
         arrays[(int)Mesh.ArrayType.Color] = colors;
-        arrays[(int)Mesh.ArrayType.TexUV] = uvs; // N.10-fix8
+        arrays[(int)Mesh.ArrayType.TexUV] = uvs;
+        arrays[(int)Mesh.ArrayType.TexUV2] = uvs2;
 
         var mesh = new ArrayMesh();
         mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Lines, arrays);
@@ -1089,25 +1123,25 @@ public partial class MainNodeNeural : VisualizerBase3D
     }
 
     /// <summary>
-    /// Deterministic pseudo-random phase from position, in [-1, 1].
-    /// MUST match neural_edge.gdshader:hash_phase exactly — shared
-    /// endpoints of edges and nodes get identical phase, so they move
-    /// together through the release wave.
+    /// Deterministic phase from position, in [-1, 1]. LOW-frequency so the
+    /// ripple is smooth (neighbouring nodes have similar phase) rather than
+    /// chaotic. ~1 cycle across the whole structure.
+    ///
+    /// Computed ONCE at topology generation and never recomputed — phase is
+    /// a property of the node, not of its current position (N.11: recomputing
+    /// on restructure created a visible seam between moved and unmoved nodes).
     /// </summary>
     private static float HashPhase(Vector3 pos)
     {
-        return MathF.Sin(pos.X * 17f + pos.Y * 23f + pos.Z * 31f);
+        return Mathf.Sin(pos.X * 5.0f + pos.Y * 3.0f) * 0.5f
+             + Mathf.Sin(pos.Z * 4.0f + pos.X * 2.5f) * 0.5f;
     }
 
     private void PrecomputeNodeWaveData()
     {
         int n = _topology.Nodes.Count;
         _nodeBasePos = new Vector3[n];
-        _nodeDistNorm = new float[n];
-        _nodePhase = new float[n];
 
-        // Deterministic phase — different seed from _pulseRng so cascade
-        // seed choice and wave jitter decorrelate across runs.
         float maxDist = 0f;
         for (int i = 0; i < n; i++)
         {
@@ -1115,25 +1149,11 @@ public partial class MainNodeNeural : VisualizerBase3D
             float dist = (_nodeBasePos[i] - StructureCenter).Length();
             if (dist > maxDist) maxDist = dist;
         }
-        // Hard guard: if _topology.Nodes was empty or every position was
-        // (1,0,0), maxDist stays 0 → dist/0 = Infinity in _nodeDistNorm →
-        // NaN arrival in the wave → NaN instance transforms → Godot culls
-        // the entire MultiMesh. Never let _maxNodeDist be <= 0.
         if (maxDist <= 1e-4f || float.IsNaN(maxDist) || float.IsInfinity(maxDist))
             maxDist = 1.0f;
         _maxNodeDist = maxDist;
 
         GD.Print($"[Neural] Wave precompute: nodes={n}, maxDist={_maxNodeDist:F3}");
-        UpdatePhaseTexture(); // N.10-fix11
-    }
-
-    private void UpdatePhaseTexture()
-    {
-        if (_phaseImage == null || _nodePhase == null) return;
-        var bytes = new byte[_nodePhase.Length * sizeof(float)];
-        Buffer.BlockCopy(_nodePhase, 0, bytes, 0, bytes.Length);
-        _phaseImage.SetData(_topology.Nodes.Count, 1, false, Image.Format.Rf, bytes);
-        _phaseTexture.Update(_phaseImage);
     }
 
     /// <summary>
@@ -1369,9 +1389,6 @@ public partial class MainNodeNeural : VisualizerBase3D
 
     private void TickRestructure()
     {
-        // N.10-fix: same clock-domain fix as UpdateNodeTransforms — 2.5 s
-        // motion was sampled at audio clock rate (25–50 Hz), rendered at
-        // 60 FPS → stutter. Now uses visual clock.
         float t = Mathf.Clamp(
             (float)(_visualTime - _restructureVisualStart) / RestructureDuration,
             0f, 1f);
@@ -1386,7 +1403,6 @@ public partial class MainNodeNeural : VisualizerBase3D
             _nodeBasePos[i] = _topology.Nodes[i].Position;
             _nodePhase[i] = HashPhase(_topology.Nodes[i].Position);
         }
-        UpdatePhaseTexture(); // N.10-fix11
 
         for (int i = 0; i < _topology.Nodes.Count; i++)
         {
@@ -1400,8 +1416,7 @@ public partial class MainNodeNeural : VisualizerBase3D
         RebuildIntraEdgeMesh();
         RebuildCCEdgeMesh();
 
-        if (t >= 1f)
-            FinishRestructure();
+        if (t >= 1f) FinishRestructure();
     }
 
     private void FinishRestructure()

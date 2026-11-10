@@ -47,7 +47,7 @@ void vertex() {
     // Previously used hash_phase(VERTEX), which differed slightly from C#'s
     // MathF.Sin for moved nodes — causing nodes and edges to arrive at
     // different wave times. Texture lookup guarantees bit-exact match.
-    float phase = texture(phase_tex, vec2((UV.x + 0.5) / texture_width, 0.5)).r;
+    float phase = UV2.x;
 
     // Sum contributions from all active waves.
     float total_pulse = 0.0;
