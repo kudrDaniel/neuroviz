@@ -251,7 +251,9 @@ public partial class MainNodeNeural : VisualizerBase3D
         _fpsLabel = new Label { Position = new Vector2(10, 10) };
         AddChild(_fpsLabel);
 
-        _ipc.VisualConfigReceived += OnVisualConfigReceived;
+        Ipc.VisualConfigReceived += OnVisualConfigReceived;
+        if (Ipc.LastVisualConfig is { } config)
+            OnVisualConfigReceived(config);
 
         // B1: initial snapshot — state before any restructure. Seek to any
         // position before the first stream_boundary restores to this.
@@ -550,15 +552,15 @@ public partial class MainNodeNeural : VisualizerBase3D
     {
         _visualTime += delta;
 
-        if (!_ipc.IsConnected)
+        if (!Ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
             return;
         }
 
-        var frame = _ipc.GetLatestFrame();
+        var frame = Ipc.GetLatestFrame();
 
-        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        double nowClock = Ipc.GetAudioClockSeconds() ?? _lastClock;
         if (frame != null)
         {
             _lastClock = frame.AudioClockSeconds;
@@ -1640,7 +1642,7 @@ public partial class MainNodeNeural : VisualizerBase3D
     {
         // A particle that would have already arrived is dropped — cheaper
         // than spawning and immediately killing it next frame.
-        double now = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        double now = Ipc.GetAudioClockSeconds() ?? _lastClock;
         if (now - startTime >= NeuroDuration) return;
 
         int slot = _neuroWriteIndex % NeuroInstanceCount;
@@ -1720,7 +1722,6 @@ public partial class MainNodeNeural : VisualizerBase3D
 
     public override void _ExitTree()
     {
-        _ipc.VisualConfigReceived -= OnVisualConfigReceived;
-        base._ExitTree();
+        Ipc.VisualConfigReceived -= OnVisualConfigReceived;
     }
 }

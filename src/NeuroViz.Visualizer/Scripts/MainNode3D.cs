@@ -120,18 +120,18 @@ public partial class MainNode3D : VisualizerBase3D
 
         SetupAmbientParticles();
         SetupBurstParticles();
-        _ipc.VisualConfigReceived += OnVisualConfigReceived;
+        Ipc.VisualConfigReceived += OnVisualConfigReceived;
     }
 
     protected override void _ProcessVisualizer(double delta)
     {
-        if (!_ipc.IsConnected)
+        if (!Ipc.IsConnected)
         {
             _fpsLabel.Text = $"Waiting... FPS: {Engine.GetFramesPerSecond():F0}";
             return;
         }
 
-        var frame = _ipc.GetLatestFrame();
+        var frame = Ipc.GetLatestFrame();
         int contCount = 0;
         if (frame != null)
         {
@@ -173,7 +173,7 @@ public partial class MainNode3D : VisualizerBase3D
                 else { _currentTrajectory = TrajectoryVariant.Idle; ApplyTrajectory(); }
             }
         }
-        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        double nowClock = Ipc.GetAudioClockSeconds() ?? _lastClock;
         float currentPulse = _pulseState.EvaluateAt(nowClock);
         float currentShiver = _shiverState.EvaluateAt(nowClock);
         float currentFlash = _cortexFlashState.EvaluateAt(nowClock);
@@ -452,8 +452,7 @@ public partial class MainNode3D : VisualizerBase3D
 
     public override void _ExitTree()
     {
-        _ipc.VisualConfigReceived -= OnVisualConfigReceived;
-        base.Dispose();
+        Ipc.VisualConfigReceived -= OnVisualConfigReceived;
     }
 
     // ── Pulse state helper ──────────────────────────────────────────

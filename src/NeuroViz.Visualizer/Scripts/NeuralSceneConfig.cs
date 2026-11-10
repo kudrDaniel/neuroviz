@@ -13,6 +13,7 @@ namespace NeuroViz.Visualizer.Scripts;
 /// </summary>
 public static class NeuralSceneConfig
 {
+    public static string InitialScene = "neural"; // Default
     public static int NodesPerHemisphere = 800;
     public static int EdgesPerNode = 4;
     public static float CCDensity = 0.3f;
@@ -34,7 +35,9 @@ public static class NeuralSceneConfig
                 NeuroViz.Core.Ipc.IpcConstants.PreviewPipeName = $"NeuroViz.Preview.{suffix}";
                 NeuroViz.Core.Ipc.IpcConstants.AudioClockMapName = $"NeuroViz.AudioClock.{suffix}";
             }
-            if (arg.StartsWith("--nv-nodes=") && int.TryParse(arg.Substring(11), out int nodes))
+            else if (arg.StartsWith("--nv-scene="))
+                InitialScene = arg.Substring(11).Trim().ToLowerInvariant();
+            else if (arg.StartsWith("--nv-nodes=") && int.TryParse(arg.Substring(11), out int nodes))
                 NodesPerHemisphere = Math.Clamp(nodes, 200, 1500);
             else if (arg.StartsWith("--nv-edges=") && int.TryParse(arg.Substring(11), out int edges))
                 EdgesPerNode = Math.Clamp(edges, 2, 6);

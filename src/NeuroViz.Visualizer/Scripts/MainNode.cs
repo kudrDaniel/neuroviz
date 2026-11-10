@@ -74,13 +74,13 @@ public partial class MainNode : VisualizerBase2D
 
     protected override void _ProcessVisualizer(double delta)
     {
-        if (!_ipc.IsConnected)
+        if (!Ipc.IsConnected)
         {
             _statusLabel.Text = "Waiting for Avalonia...";
             return;
         }
 
-        var frame = _ipc.GetLatestFrame();
+        var frame = Ipc.GetLatestFrame();
 
         if (frame != null)
         {
@@ -110,7 +110,7 @@ public partial class MainNode : VisualizerBase2D
             // Continuous: C1
             if (frame.ContinuousParams.TryGetValue("speech_music_ratio", out var r)) _contSpeechMusicRatio = r;
 
-            bool mmapOk = _ipc.GetAudioClockSeconds() != null;
+            bool mmapOk = Ipc.GetAudioClockSeconds() != null;
             _statusLabel.Text =
                 $"Clock: {_lastClock:F2}s | Frame: {frame.FrameSeq} | " +
                 $"Params: {frame.Params.Count} | Cont: {frame.ContinuousParams.Count} | " +
@@ -118,7 +118,7 @@ public partial class MainNode : VisualizerBase2D
                 $"mmap: {(mmapOk ? "ok" : "off")}";
         }
 
-        double nowClock = _ipc.GetAudioClockSeconds() ?? _lastClock;
+        double nowClock = Ipc.GetAudioClockSeconds() ?? _lastClock;
 
         // ── Event-driven currents ────────────────────────────────────
         float currentPulse = _pulseParam?.EvaluateAt(nowClock) ?? 0f;
@@ -212,10 +212,5 @@ public partial class MainNode : VisualizerBase2D
         _contRect.Scale = new Vector2(contScale, contScale);
         _contRect.Color = new Color(1.0f, 0.5f, 0.2f, 0.7f)
             .Lerp(new Color(0.2f, 1.0f, 0.5f, 0.9f), _smoothHarmonicity);
-    }
-
-    public override void _ExitTree()
-    {
-        base.Dispose();
     }
 }

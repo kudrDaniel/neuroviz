@@ -192,7 +192,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.ControlPipeName, PipeDirection.InOut, 5, // 5 инстансов дают ОС время на очистку зомби-сокетов
+                    IpcConstants.ControlPipeName, PipeDirection.InOut, 1,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);
@@ -268,7 +268,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 5,
+                    IpcConstants.EventStreamPipeName, PipeDirection.Out, 1,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);
@@ -333,7 +333,7 @@ public sealed class IpcServer : IDisposable
             try
             {
                 var pipe = new NamedPipeServerStream(
-                    IpcConstants.PreviewPipeName, PipeDirection.In, 5,
+                    IpcConstants.PreviewPipeName, PipeDirection.In, 1,
                     PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
                 await pipe.WaitForConnectionAsync(_cts.Token);

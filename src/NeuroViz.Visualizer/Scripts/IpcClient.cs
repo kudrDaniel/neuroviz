@@ -47,6 +47,7 @@ public sealed class IpcClient : IDisposable
     /// to live objects (camera, particle emitters).
     /// </summary>
     public event Action<SetVisualConfigPayload>? VisualConfigReceived;
+    public SetVisualConfigPayload? LastVisualConfig { get; private set; }
 
     /// <summary>
     /// Path to the scene a SetVisualizerScene command asked us to switch to.
@@ -199,6 +200,7 @@ public sealed class IpcClient : IDisposable
             case ControlKinds.SetVisualConfig:
                 var visual = MessagePackSerializer.Deserialize<SetVisualConfigPayload>(
                     msg.Payload, MessagePackOptions.Default);
+                LastVisualConfig = visual;
                 NeuralSceneConfig.CameraOrbitSpeed = visual.NeuralCameraOrbitSpeed;
                 NeuralSceneConfig.CameraYAmplitude = visual.NeuralCameraYAmplitude;
                 _pendingMainThreadActions.Enqueue(() => VisualConfigReceived?.Invoke(visual));

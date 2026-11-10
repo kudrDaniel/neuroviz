@@ -16,33 +16,21 @@ namespace NeuroViz.Visualizer.Scripts;
 /// </summary>
 public abstract partial class VisualizerBase3D : Node3D
 {
-    protected IpcClient _ipc = null!;
+    protected IpcClient Ipc => IpcBootstrapHolder.Client;
     private bool _previewFirstCaptureLogged;
 
     public override void _Ready()
     {
-        _ipc = new IpcClient();
-        // Откладываем запуск на следующий кадр, чтобы ОС успела освободить
-        // каналы предыдущей сцены (ChangeSceneToFile убивает старую сцену в том же кадре).
-        CallDeferred(nameof(StartIpcDeferred));
         _ReadyVisualizer();
-    }
-
-    private void StartIpcDeferred()
-    {
-        if (IsInsideTree() && _ipc != null)
-        {
-            _ipc.Start();
-        }
     }
 
     public override void _Process(double delta)
     {
-        _ipc.DrainMainThreadActions();
+        Ipc.DrainMainThreadActions();
 
-        if (_ipc.PendingScenePath is { } pendingPath)
+        if (Ipc.PendingScenePath is { } pendingPath)
         {
-            _ipc.ClearPendingScene();
+            Ipc.ClearPendingScene();
             var current = GetTree().CurrentScene?.SceneFilePath;
             if (!string.Equals(current, pendingPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -54,7 +42,7 @@ public abstract partial class VisualizerBase3D : Node3D
         _ProcessVisualizer(delta);
 
         double now = Time.GetTicksMsec() / 1000.0;
-        if (_ipc.ShouldCapturePreview(now))
+        if (Ipc.ShouldCapturePreview(now))
             CapturePreviewAfterDraw();
     }
 
@@ -65,7 +53,7 @@ public abstract partial class VisualizerBase3D : Node3D
     {
         await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
 
-        if (!IsInsideTree() || !_ipc.IsPreviewConnected) return;
+        if (!IsInsideTree() || !Ipc.IsPreviewConnected) return;
 
         var img = GetViewport().GetTexture().GetImage();
         if (img == null || img.IsEmpty()) return;
@@ -84,12 +72,12 @@ public abstract partial class VisualizerBase3D : Node3D
         }
 
         img.Resize(320, 180, Image.Interpolation.Bilinear);
-        _ipc.QueuePreview(img);
+        Ipc.QueuePreview(img);
         img.Dispose();
     }
 
     public override void _ExitTree()
     {
-        _ipc?.Dispose();
+        Ipc?.Dispose();
     }
 }
