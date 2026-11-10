@@ -64,9 +64,4 @@ public abstract partial class VisualizerBase2D : Node2D
         Ipc.QueuePreview(img);
         img.Dispose();
     }
-
-    public override void _ExitTree()
-    {
-        Ipc?.Dispose();
-    }
 }
